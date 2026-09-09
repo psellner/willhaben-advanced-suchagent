@@ -229,7 +229,8 @@ class Handler(BaseHTTPRequestHandler):
                 "config": cfg,
                 "telegram_ready": bool(tg.get("token") and tg.get("chat_id")),
                 "status": STATUS,
-                "seen_counts": {k: len(agent.seen_ids(v)) for k, v in seen.items()},
+                "seen_counts": {k: len(agent.seen_ids(v))
+                                 for k, v in seen.items() if k != "_meta"},
             })
 
         self.send_error(404)
@@ -305,6 +306,10 @@ class Handler(BaseHTTPRequestHandler):
         names = [s.get("name", "").strip() for s in searches]
         if any(not n for n in names):
             return self.send_json({"error": "jede Suche braucht einen Namen"}, 400)
+        if "_meta" in names:
+            # Reservierter Schlüssel im Zustand (Zeitpunkt der letzten vollen
+            # Preisprüfung) - als Suchname würde er den Zustand überschreiben.
+            return self.send_json({"error": "„_meta“ ist als Name reserviert"}, 400)
         if len(set(names)) != len(names):
             return self.send_json(
                 {"error": "Namen müssen eindeutig sein - der Name führt den Zustand"},

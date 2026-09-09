@@ -231,6 +231,7 @@ class Handler(BaseHTTPRequestHandler):
                 "status": STATUS,
                 "seen_counts": {k: len(agent.seen_ids(v))
                                  for k, v in seen.items() if k != "_meta"},
+                "price_check": seen.get("_meta", {}),
             })
 
         self.send_error(404)
@@ -318,6 +319,10 @@ class Handler(BaseHTTPRequestHandler):
         cfg = agent.load_config()
         cfg["searches"] = searches
         cfg["poll_interval"] = int(data.get("poll_interval") or 60)
+        # Nur überschreiben, wenn mitgeschickt - sonst würde ein direkter
+        # API-Aufruf ohne dieses Feld die volle Preisprüfung ungewollt abschalten.
+        if "price_check_interval" in data:
+            cfg["price_check_interval"] = int(data.get("price_check_interval") or 0)
         agent.save_config(cfg)
         WAKE.set()      # nächsten Durchlauf sofort auslösen
         return self.send_json({"ok": True, "searches": len(searches)})

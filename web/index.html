@@ -139,6 +139,11 @@
   <span class="stat">Intervall
     <input type="number" id="interval" min="30" max="3600" step="10"
            style="width:70px;display:inline-block;padding:3px 6px"> s</span>
+  <span class="stat" title="Prüft auch Treffer, die aus dem normalen Suchfenster gefallen sind, per eigenem Abruf je Inserat.">
+    <label style="display:inline;color:inherit"><input type="checkbox" id="f-pricecheck-on"
+           style="width:auto;vertical-align:-2px;margin:0 4px 0 0">Preisprüfung</label>
+    alle <input type="number" id="f-pricecheck-interval" min="1" max="1440" step="1"
+           style="width:55px;display:inline-block;padding:3px 6px"> Min</span>
   <button id="btnTest">Telegram testen</button>
   <button class="primary" id="btnSave">Speichern</button>
 </header>
@@ -612,7 +617,9 @@ async function save() {
   try {
     await api("/api/config", "PUT", {
       searches: CFG.searches,
-      poll_interval: Number($("interval").value) || 60
+      poll_interval: Number($("interval").value) || 60,
+      price_check_interval: $("f-pricecheck-on").checked
+        ? (Number($("f-pricecheck-interval").value) || 30) * 60 : 0
     });
     DIRTY = false; markDirty();
     note("ok", "Gespeichert. Der nächste Durchlauf startet sofort.");
@@ -633,15 +640,34 @@ function markDirty() {
   if (el) el.textContent = DIRTY ? "ungespeicherte Änderungen" : "";
 }
 
+function fmtTime(epochSeconds) {
+  const d = new Date(epochSeconds * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+         " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+
 function paintStatus(d) {
   const s = d.status;
-  const bad = !d.telegram_ready || s.last_error;
+  const pc = d.price_check || {};
+  const pcOn = (d.config && d.config.price_check_interval) > 0;
+  let pcText;
+  if (!pcOn) pcText = "Preisprüfung aus";
+  else if (pc.last_price_check)
+    pcText = "Preisprüfung " + fmtTime(pc.last_price_check) +
+             " (" + (pc.checked || 0) + " geprüft, " + (pc.changed || 0) + " geändert)";
+  else pcText = "Preisprüfung steht noch aus";
+
+  const bad = !d.telegram_ready || s.last_error || (pcOn && pc.last_error);
   $("hdrStatus").innerHTML =
     '<span class="dot' + (bad ? " bad" : "") + '"></span>' +
     (d.telegram_ready ? "Telegram bereit" : "Telegram nicht konfiguriert") +
     ' · letzter Lauf <b>' + esc((s.last_poll || "—").replace("T", " ").slice(0, 19)) + '</b>' +
     ' · gesendet <b>' + s.sent_total + '</b>' +
-    (s.last_error ? ' · <b style="color:var(--no)">' + esc(s.last_error) + '</b>' : "");
+    ' · ' + esc(pcText) +
+    (s.last_error ? ' · <b style="color:var(--no)">' + esc(s.last_error) + '</b>' : "") +
+    (pcOn && pc.last_error
+      ? ' · <b style="color:var(--no)">Preisprüfung: ' + esc(pc.last_error) + '</b>' : "");
 }
 
 // Voller Neuaufbau: nur nach einer bewussten Aktion (Start, Speichern,
@@ -653,6 +679,10 @@ async function load() {
     CFG = d.config;
     CFG.searches = CFG.searches || [];
     $("interval").value = d.status.interval || CFG.poll_interval || 60;
+    const pci = CFG.price_check_interval || 0;
+    $("f-pricecheck-on").checked = pci > 0;
+    $("f-pricecheck-interval").value = Math.max(1, Math.round((pci || 1800) / 60));
+    $("f-pricecheck-interval").disabled = !$("f-pricecheck-on").checked;
     if (SEL < 0 && CFG.searches.length) SEL = 0;
     if (SEL >= CFG.searches.length) SEL = CFG.searches.length - 1;
     DIRTY = false;
@@ -690,6 +720,11 @@ $("btnAddUrl").onclick = () => {
   SEL = CFG.searches.length - 1;
   DIRTY = true; renderAll(); markDirty();
 };
+$("f-pricecheck-on").addEventListener("change", () => {
+  $("f-pricecheck-interval").disabled = !$("f-pricecheck-on").checked;
+  DIRTY = true; markDirty();
+});
+$("f-pricecheck-interval").addEventListener("input", () => { DIRTY = true; markDirty(); });
 $("btnSave").onclick = save;
 $("btnTest").onclick = async () => {
   try { await api("/api/test-telegram", "POST", {}); alert("Testnachricht verschickt."); }

@@ -428,7 +428,7 @@ def send_telegram(tg, ad, reach=None):
         marks.append("%.0f km" % km)
     extra = ("\n" + esc(" · ".join(marks))) if marks else ""
 
-    caption = ("<b>%s</b>\n%s  ·  %s\n%s  ·  %s%s\n<i>%s</i>\n\n%s") % (
+    caption = ("\U0001F195 <b>Neuer Treffer</b>\n<b>%s</b>\n%s  ·  %s\n%s  ·  %s%s\n<i>%s</i>\n\n%s") % (
         esc(ad["title"]), esc(ad["price_display"]), seller,
         esc(loc), esc(ad["state"]), extra, esc(when), ad["url"])
     send_telegram_message(tg, caption, ad["image"])

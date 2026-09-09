@@ -52,6 +52,7 @@ vor dem Abruf reduziert. Im Test drückte das die Zahl von 7435 auf 430:
 | Parameter | Bedeutung |
 |---|---|
 | `keyword` | Suchbegriff |
+| `keywords` | mehrere Schreibweisen, siehe unten |
 | `PRICE_FROM` / `PRICE_TO` | Preisspanne in Euro |
 | `ISPRIVATE` | `1` = nur Privatanbieter |
 | `areaId` | Bundesland |
@@ -61,6 +62,40 @@ vor dem Abruf reduziert. Im Test drückte das die Zahl von 7435 auf 430:
 
 Am bequemsten stellt man die Suche im Browser ein und fügt die fertige URL
 in der Oberfläche ein. Dann muss man keinen Parameter selbst kennen.
+
+#### Mehrere Schreibweisen je Suche
+
+willhabens API kennt nur einen `keyword`, und der entscheidet schon, welche
+Inserate überhaupt ankommen. Die Suche ist zwar unscharf genug für Tippfehler
+wie „Palystation“, liefert je Schreibweise aber eine andere Trefferliste — und
+weil immer nur die neuesten `rows` Inserate geholt werden, fehlt der Rest
+dauerhaft.
+
+Deshalb nimmt `keywords` eine Liste. Jede Schreibweise wird einzeln abgefragt,
+die Ergebnisse werden über die Inserats-ID vereinigt und nach Erscheinungsdatum
+sortiert. Fällt eine Schreibweise aus, laufen die übrigen weiter.
+
+```json
+"keywords": ["play station 5", "playstation 5", "ps5", "sony playstation 5"]
+```
+
+Gemessen an der PS5-Suche mit Preisspanne 200–550 und Privatanbietern:
+
+| abgefragt | Inserate durch den Filter |
+|---|---|
+| nur `play station 5` | 8 |
+| alle vier zusammen | 22 |
+
+Jede Schreibweise kostet eine eigene Abfrage je Durchlauf. Die Vorschau zeigt
+je Schreibweise, wie viele Inserate nur über sie hereinkommen; steht dort
+dauerhaft 0, kann sie weg. Ist `keywords` leer, gilt wie bisher der einzelne
+`keyword` aus `params` oder aus der URL.
+
+Eine Schreibweise zu einer laufenden Suche hinzuzufügen macht auf einen Schlag
+lauter Bestandsinserate sichtbar. Damit die nicht alle gleichzeitig im Chat
+landen, meldet ein Durchlauf höchstens `max_notify_per_run` neue Treffer
+(Standard 8, je Suche überschreibbar). Der Rest bleibt ungemerkt und kommt in
+den nächsten Durchläufen nach — es geht nichts verloren, es verteilt sich nur.
 
 **2. Wörter** — das ist der normale Weg in der Oberfläche. Wörter werden
 mit Komma getrennt eingetippt, Groß- und Kleinschreibung ist egal, und
@@ -121,20 +156,21 @@ zusätzlich zu den Wörtern. Sie werden derzeit nur in `data/config.json`
 gepflegt; die Oberfläche zeigt sie nicht an, lässt sie beim Speichern aber
 unangetastet. Dasselbe gilt für willhaben-Parameter ohne eigenes Feld.
 
-### Schreibweisen bei den Pflichtwörtern
+### Schreibweisen bei den Wortfiltern
 
-Zwischen den Teilen eines mehrteiligen Worts steht `\s*`, also null oder
-mehr Leerzeichen. Ein mit Leerzeichen getipptes Wort deckt deshalb auch die
-zusammengeschriebene Form ab, umgekehrt aber nicht:
+Ein eingetipptes Wort wird in Buchstaben- und Ziffernblöcke zerlegt, zwischen
+denen ein beliebiges Trennzeichen stehen darf oder gar keines. Wie du den
+Begriff schreibst, spielt deshalb keine Rolle:
 
 | eingetippt | trifft |
 |---|---|
-| `play station 5` | Play Station 5, PlayStation 5, Playstation5 |
-| `playstation 5` | PlayStation 5, Playstation5 — **nicht** Play Station 5 |
-| `ps 5` | PS 5, PS5 |
+| `ps 5`, `ps5` | PS 5, PS5, PS-5, ps.5 |
+| `play station 5`, `playstation 5` | Play Station 5, PlayStation 5, Playstation5, PlayStation-5 |
+| `hülle`, `huelle` | Hülle, Huelle, Hüllen |
 
-Mehrteilige Begriffe also lieber getrennt schreiben. `playstation 5`
-zusätzlich zu `play station 5` einzutragen bringt nichts.
+Umlaute gelten also samt ihrer Umschreibung, in beide Richtungen. Dasselbe
+Wort in mehreren Schreibweisen einzutragen bringt nichts mehr — anders als
+bei `keywords`, wo es entscheidend ist.
 
 Gemessen an 200 Inseraten der PS5-Suche: die Titelpflicht verwirft 67
 davon. Darunter waren Poster, Monitore, Lenkräder, PSVR2 und PSP — und

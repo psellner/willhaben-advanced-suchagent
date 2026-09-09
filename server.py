@@ -329,12 +329,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def preview(self, data):
         search = data.get("search") or {}
-        rows, total = agent.evaluate(search, limit=int(data.get("limit") or 0) or None)
+        rows, total, sources = agent.evaluate(
+            search, limit=int(data.get("limit") or 0) or None)
         return self.send_json({
             "total_on_willhaben": total,
             "checked": len(rows),
             "passed": sum(1 for r in rows if r["ok"]),
-            "api_url": agent.build_api_url(search),
+            # Eine Zeile je Schreibweise: was sie liefert und was nur sie liefert.
+            "sources": sources,
+            "api_url": sources[0]["url"] if sources else "",
             "results": rows,
         })
 

@@ -61,8 +61,12 @@ def http_post_json(url, payload, timeout=30):
 
 # ---------------------------------------------------------------- willhaben
 
-def build_api_url(search):
-    """Baut die REST-URL aus einer willhaben-Suchseiten-URL oder aus Einzelfeldern."""
+def build_api_url(search, keyword=None):
+    """Baut die REST-URL aus einer willhaben-Suchseiten-URL oder aus Einzelfeldern.
+
+    `keyword` überschreibt den Suchbegriff der Suche - so entsteht aus einer
+    Suche je Schreibweise eine eigene Abfrage.
+    """
     if search.get("url"):
         parsed = urllib.parse.urlparse(search["url"])
         # /iad/kaufen-und-verkaufen/marktplatz -> kaufen-und-verkaufen/marktplatz
@@ -75,6 +79,9 @@ def build_api_url(search):
         params = dict(search.get("params") or {})
         if search.get("keyword"):
             params["keyword"] = search["keyword"]
+
+    if keyword is not None:
+        params["keyword"] = keyword
 
     reach = (search.get("filter") or {}).get("reach") or {}
     if reach.get("mode") == "paylivery":
@@ -143,21 +150,95 @@ def parse_ad(ad):
         "postcode": attr(ad, "POSTCODE"),
         "state": attr(ad, "STATE"),
         "published": attr(ad, "PUBLISHED_String"),
+        # Epoch in Millisekunden. Nur zum Sortieren der vereinigten
+        # Trefferliste gebraucht, deshalb nicht in der Oberfläche sichtbar.
+        "published_ts": int(attr(ad, "PUBLISHED", "0") or 0),
         "private": attr(ad, "ISPRIVATE") == "1",
         "url": "https://www.willhaben.at/iad/" + seo if seo else "",
         "image": "https://cache.willhaben.at/mmo/" + mmo if mmo else "",
     }
 
 
-def fetch(search):
-    raw = http_get(build_api_url(search), headers={
+def search_keywords(search):
+    """Die Schreibweisen, mit denen diese Suche abgefragt wird.
+
+    willhabens API kennt nur einen `keyword`-Parameter, und der entscheidet
+    schon, welche Inserate überhaupt ankommen: "play station 5" und "ps5"
+    liefern deutlich verschiedene Trefferlisten. Deshalb wird je Schreibweise
+    einmal abgefragt und danach vereinigt.
+
+    Leere Liste heißt: den Suchbegriff nehmen, der ohnehin in `params` oder
+    in der URL steht. Dafür steht das einzelne None.
+    """
+    out, seen = [], set()
+    for k in (search.get("keywords") or []):
+        k = (k or "").strip()
+        # Doppelte Schreibweisen kosten einen Request und bringen nichts.
+        if k and k.lower() not in seen:
+            seen.add(k.lower())
+            out.append(k)
+    return out or [None]
+
+
+def url_keyword(url):
+    """Der Suchbegriff, der tatsächlich in einer fertigen Abfrage-URL steht."""
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    return q.get("keyword", "")
+
+
+def fetch_one(search, keyword=None):
+    url = build_api_url(search, keyword)
+    raw = http_get(url, headers={
         "Accept": "application/json",
         "User-Agent": UA,
         "x-wh-client": WH_CLIENT,
     })
     data = json.loads(raw.decode("utf-8"))
     ads = data.get("advertSummaryList", {}).get("advertSummary", []) or []
-    return [parse_ad(a) for a in ads], data.get("rowsFound", 0)
+    return [parse_ad(a) for a in ads], data.get("rowsFound", 0), url
+
+
+def fetch(search):
+    """Alle Schreibweisen abfragen und zu einer Trefferliste vereinigen.
+
+    Gibt (Inserate, größte Gesamtzahl, Herkunft je Schreibweise) zurück. Die
+    Herkunft trägt die Vorschau, damit sichtbar wird, was jede Schreibweise
+    beisteuert. Fällt eine einzelne aus, laufen die übrigen weiter - fällt
+    keine durch, kommt der Fehler wie bisher heraus.
+    """
+    by_id, sources, failed = {}, [], 0
+    for kw in search_keywords(search):
+        src = {"keyword": kw}
+        try:
+            ads, found, url = fetch_one(search, kw)
+        except Exception as e:
+            failed += 1
+            src["url"] = build_api_url(search, kw)
+            src["keyword"] = kw if kw is not None else url_keyword(src["url"])
+            src["error"] = str(e)
+            src["last_exception"] = e
+            sources.append(src)
+            log("Suchbegriff „%s“ fehlgeschlagen: %s" % (src["keyword"], e))
+            continue
+        src["url"] = url
+        src["keyword"] = kw if kw is not None else url_keyword(url)
+        src["found"] = found
+        src["fetched"] = len(ads)
+        # Wie viele Inserate nur über diese Schreibweise hereinkommen - das
+        # zeigt in der Vorschau, ob sich eine Variante überhaupt lohnt.
+        src["only_here"] = sum(1 for a in ads if a["id"] not in by_id)
+        for a in ads:
+            by_id.setdefault(a["id"], a)
+        sources.append(src)
+
+    if failed and failed == len(sources):
+        raise sources[0].pop("last_exception")
+    for src in sources:
+        src.pop("last_exception", None)
+
+    merged = sorted(by_id.values(), key=lambda a: a["published_ts"], reverse=True)
+    total = max([s.get("found", 0) for s in sources] or [0])
+    return merged, total, sources
 
 
 # Die Suche liefert immer nur die letzten `rows` Inserate (neueste zuerst).
@@ -215,18 +296,40 @@ def title_head(title):
 # ausschließt, meint auch "Spiele"; wer "Controller" sagt, auch "Controllern".
 PLURAL = r"(?:e|en|er|ern|s|n)?"
 
+# Was zwischen zwei Wortteilen stehen darf. Getippt wird "play station 5",
+# im Inserat steht "PlayStation-5", "playstation 5" oder "PS5" - für den
+# Filter ist das dasselbe Produkt.
+SEP = r"[\s._/-]*"
+
+# Umlaute werden in Inseraten oft umschrieben und umgekehrt. Wer "hülle"
+# eintippt, meint auch "huelle".
+UMLAUT = {"ä": "(?:ä|ae)", "ö": "(?:ö|oe)", "ü": "(?:ü|ue)", "ß": "(?:ß|ss)"}
+
+# Zerlegt einen Begriff in Buchstaben-, Ziffern- und Sonderzeichenblöcke:
+# "ps5" -> "ps", "5"; "play station 5" -> "play", "station", "5". Dadurch ist
+# es egal, ob der Begriff getrennt eingetippt wurde oder zusammen.
+CHUNK = re.compile(r"[^\W\d_]+|\d+|[^\w\s]+")
+
+
+def chunk_regex(chunk):
+    """Ein Wortteil als Muster - Sonderzeichen entwertet, Umlaute geöffnet."""
+    if chunk[:1].isalpha():
+        return "".join(UMLAUT.get(c.lower(), re.escape(c)) for c in chunk)
+    return re.escape(chunk)
+
 
 def term_to_regex(term):
     """Ein eingetipptes Wort in ein sicheres Muster übersetzen.
 
     Sonderzeichen werden entwertet, damit ein Wort wie "c++" nicht als Regex
-    verstanden wird. Leerzeichen dürfen im Inserat mehrfach oder gar nicht
-    stehen ("playstation 5" trifft auch "playstation  5").
+    verstanden wird. Zwischen den Wortteilen darf im Inserat ein beliebiges
+    Trennzeichen stehen oder gar keines: "ps 5" trifft auch PS5, PS-5 und ps.5.
     """
     term = term.strip()
-    if not term:
+    chunks = CHUNK.findall(term)
+    if not chunks:
         return None
-    core = r"\s*".join(re.escape(p) for p in term.split())
+    core = SEP.join(chunk_regex(c) for c in chunks)
     pre = r"\b" if term[:1].isalnum() else ""
     if term[-1:].isalpha():
         post = PLURAL + r"\b"
@@ -294,9 +397,10 @@ def matches(ad, f):
         except re.error as e:
             return False, "ungültiges Titel-Muster (%s)" % e
 
-    req = [w for w in (f.get("require_words") or []) if w.strip()]
-    if req and not any(re.search(term_to_regex(w), title, re.I) for w in req):
-        return False, "Titel enthält keines von: %s" % ", ".join(req)
+    req = [(term_to_regex(w), w) for w in (f.get("require_words") or []) if w.strip()]
+    req = [(rx, w) for rx, w in req if rx]
+    if req and not any(re.search(rx, title, re.I) for rx, _ in req):
+        return False, "Titel enthält keines von: %s" % ", ".join(w for _, w in req)
 
     # Der Hauptartikel wird getrennt geprüft, damit Zubehör als Beigabe im
     # Bundle erlaubt bleibt.
@@ -367,7 +471,7 @@ def reachable(ad, reach):
 
 def evaluate(search, limit=None):
     """Suche abfragen und jedes Inserat bewerten - Grundlage der Vorschau."""
-    ads, total = fetch(search)
+    ads, total, sources = fetch(search)
     if limit:
         ads = ads[:limit]
     reach = (search.get("filter") or {}).get("reach")
@@ -380,8 +484,9 @@ def evaluate(search, limit=None):
         km = distance_km(ad, reach)
         row["km"] = round(km, 1) if km is not None else None
         row.pop("coords", None)     # Rohkoordinaten muss die Oberfläche nicht sehen
+        row.pop("published_ts", None)
         out.append(row)
-    return out, total
+    return out, total, sources
 
 
 # ---------------------------------------------------------------- telegram
@@ -502,6 +607,14 @@ def save_config(cfg):
 # mit vielen alten Treffern die volle Prüfung nicht ausufern lässt.
 MAX_TRACKED_PRICES = 300
 
+# Höchstzahl neuer Treffer, die ein einzelner Durchlauf meldet. Greift, wenn
+# eine laufende Suche erweitert wird - eine zusätzliche Schreibweise in
+# `keywords` macht auf einen Schlag lauter Bestandsinserate sichtbar, die
+# sonst alle gleichzeitig im Chat landen würden. Der Rest bleibt ungemerkt
+# und kommt in den nächsten Durchläufen nach, es geht also nichts verloren.
+# Je Suche über `max_notify_per_run` überschreibbar.
+MAX_NOTIFY_PER_RUN = 8
+
 
 def search_entry(state, name):
     """Zustand einer Suche holen, altes Format (nur Liste von IDs) migrieren."""
@@ -536,7 +649,7 @@ def run_search(tg, search, state, dry_run=False):
         if ad.get("seo"):
             seo_map[ad["id"]] = ad["seo"]
 
-    ads, _ = fetch(search)
+    ads, _, _ = fetch(search)
     if not ads:
         log("%s: 0 Treffer zurück - Suche prüfen" % name)
         return 0
@@ -546,6 +659,10 @@ def run_search(tg, search, state, dry_run=False):
     new.reverse()   # ältestes zuerst, damit die Chat-Reihenfolge stimmt
 
     sent, failed = 0, set()
+    # Treffer, die diesmal nicht mehr in den Chat passen. Sie bleiben
+    # ungemerkt, damit der nächste Durchlauf sie erneut aufgreift.
+    deferred, hits = set(), 0
+    limit = int(search.get("max_notify_per_run") or MAX_NOTIFY_PER_RUN)
 
     # Preisänderungen bei Inseraten, die schon bekannt sind und weiter zum
     # Filter passen. Preis 0 heißt "keine Angabe" und zählt nicht als
@@ -583,6 +700,10 @@ def run_search(tg, search, state, dry_run=False):
         if first_run:
             track(ad)
             continue
+        hits += 1
+        if hits > limit and not dry_run:
+            deferred.add(ad["id"])
+            continue
         if dry_run:
             log("%s: [DRY] %s | %s" % (name, ad["price_display"], ad["title"][:60]))
         else:
@@ -596,8 +717,16 @@ def run_search(tg, search, state, dry_run=False):
         track(ad)
         sent += 1
 
-    # Nicht zugestellte Treffer bleiben ungemerkt, damit sie wiederkommen.
-    fresh = [a["id"] for a in ads if a["id"] not in seen_set and a["id"] not in failed]
+    if deferred:
+        log("%s: %d weitere Treffer auf die nächsten Durchläufe verschoben "
+            "(höchstens %d Meldungen je Lauf)" % (name, len(deferred), limit))
+
+    # Nicht zugestellte und zurückgestellte Treffer bleiben ungemerkt, damit
+    # sie wiederkommen.
+    fresh = [a["id"] for a in ads
+             if a["id"] not in seen_set
+             and a["id"] not in failed
+             and a["id"] not in deferred]
     entry["seen"] = (fresh + seen)[:MAX_SEEN_PER_SEARCH]
     # Preise/SEO-Pfade nur für die neuesten Treffer behalten - das begrenzt
     # sowohl den Speicher als auch die Kosten der vollen Preisprüfung.

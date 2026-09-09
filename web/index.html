@@ -166,18 +166,15 @@
 <template id="tpl">
   <h2>Suche bearbeiten</h2>
 
-  <div class="row">
-    <div>
-      <label for="f-name"><b>Name</b> <button type="button" class="q" data-h="name">?</button></label>
-      <input type="text" id="f-name" placeholder="ps5-konsole">
-      <div class="help" data-help="name"></div>
-    </div>
-    <div>
-      <label for="f-keyword"><b>Suchbegriff</b> <button type="button" class="q" data-h="keyword">?</button></label>
-      <input type="text" id="f-keyword" placeholder="playstation 5">
-      <div class="help" data-help="keyword"></div>
-    </div>
-  </div>
+  <label for="f-name"><b>Name</b> <button type="button" class="q" data-h="name">?</button></label>
+  <input type="text" id="f-name" placeholder="ps5-konsole">
+  <div class="help" data-help="name"></div>
+
+  <label for="f-keyword"><b>Suchbegriffe</b>
+    <button type="button" class="q" data-h="keyword">?</button></label>
+  <input type="text" id="f-keyword" placeholder="playstation 5, play station 5, ps5">
+  <div class="chips" data-chips="f-keyword"></div>
+  <div class="help" data-help="keyword"></div>
 
   <label for="f-url">Oder komplette willhaben-URL aus dem Browser
     <button type="button" class="q" data-h="url">?</button></label>
@@ -293,13 +290,13 @@ const KNOWN_PARAMS = ["keyword", "PRICE_FROM", "PRICE_TO", "ISPRIVATE"];
 
 const HELP = {
   name: "Führt den Zustand dieser Suche. Beim Umbenennen gilt sie als neu: der nächste Lauf markiert den aktuellen Bestand stumm und meldet erst danach wieder.",
-  keyword: "Das, was du auch oben in das Suchfeld auf willhaben tippen würdest. Wird mitgeschickt, filtert also schon dort.",
+  keyword: "Das, was du auch oben in das Suchfeld auf willhaben tippen würdest. Wird mitgeschickt, filtert also schon dort. — Mehrere Schreibweisen mit Komma trennen: jede wird einzeln abgefragt und die Ergebnisse werden zusammengelegt. Das ist wichtig, weil willhaben je Schreibweise eine andere Trefferliste liefert und du immer nur die neuesten Inserate daraus bekommst: „play station 5“ und „ps5“ finden zu großen Teilen verschiedene Inserate. Zwei bis fünf Varianten sind sinnvoll, jede kostet eine eigene Abfrage. Welche etwas beiträgt, zeigt dir die Vorschau.",
   url: "Am bequemsten: die Suche im Browser auf willhaben einstellen und die Adresszeile hier einfügen. Alle dort gesetzten Filter bleiben erhalten, auch Kategorie und Bundesland. Ist eine URL gesetzt, gewinnt sie gegenüber Suchbegriff und Preisfeldern.",
   price: "Preisgrenze direkt bei willhaben. Das reduziert die Treffermenge schon vor dem Abruf und ist der wirksamste Filter überhaupt.",
   rows: "Wie viele der neuesten Inserate je Abfrage geholt werden. 30 genügt im Minutentakt weit. Höher nur, wenn deine Suche mehr als 30 Neuzugänge pro Intervall hat.",
   reach: "willhaben kann nur „nur PayLivery“. Die Oder-Verknüpfung rechnet der Agent selbst: ein Inserat kommt durch, wenn es entweder per PayLivery versendet wird oder nah genug liegt, um es abzuholen. Praktisch, wenn dir beides recht ist, aber nicht ein Versand quer durchs Land ohne Käuferschutz.",
   geo: "Der Bezugspunkt für die Entfernung, gerechnet als Luftlinie. Adresse, Ort oder Postleitzahl eintippen und auf Suchen drücken, dann bei mehreren Treffern den richtigen wählen. „Mein Standort“ fragt den Browser und trägt die gefundene Adresse ein. Gesucht wird nur in Österreich. Die Suche läuft über OpenStreetMap, dorthin geht also der Suchtext beziehungsweise die Koordinaten; gespeichert wird alles nur in deiner eigenen Konfiguration.",
-  req: "Mindestens eines dieser Wörter muss im Titel stehen, sonst wird das Inserat verworfen. Der wirksamste Filter, weil er alles aussortiert, was gar nicht dein Produkt ist. — Tipp: schreib mehrteilige Begriffe mit Leerzeichen. Fehlende Leerzeichen werden mitgetroffen, zusätzliche nicht. „play station 5“ findet deshalb auch PlayStation 5 und Playstation5, umgekehrt findet „playstation 5“ die getrennte Schreibweise nicht. Für PS5 brauchst du zusätzlich „ps 5“.",
+  req: "Mindestens eines dieser Wörter muss im Titel stehen, sonst wird das Inserat verworfen. Der wirksamste Filter, weil er alles aussortiert, was gar nicht dein Produkt ist. — Die Schreibweise ist egal: Trennzeichen zwischen den Wortteilen werden mitgetroffen, egal ob Leerzeichen, Bindestrich, Punkt oder gar nichts. „ps 5“ findet PS5, PS-5 und ps.5 gleichermaßen, „playstation 5“ auch PlayStation-5. Umlaute darfst du umschreiben, „hülle“ findet auch „huelle“.",
   blocktitle: "Kommt eines dieser Wörter irgendwo im Titel vor, ist das Inserat draußen. Gedacht für falsche Produkte und für Leute, die selbst etwas suchen statt verkaufen. — Beispiel: „ps 4, playstation 3, suche, tausche“.",
   blockmain: "Wie oben, aber es zählt nur der Anfang des Titels bis zur ersten Aufzählung. Damit schließt du Zubehör aus, ohne gute Bundles zu verlieren: „Playstation 5 Spiele“ fliegt raus, „PS5 Slim Digital + 2 Controller“ bleibt drin, weil der Controller dort nur eine Beigabe ist. Genau dafür gibt es dieses Feld getrennt vom Feld darüber.",
   blocktext: "Durchsucht auch den Beschreibungstext, nicht nur den Titel. Gedacht für Angaben, die selten in die Überschrift wandern. — Beispiel: „defekt, bastler, ersatzteil“.",
@@ -319,6 +316,14 @@ async function api(path, method, body) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
   return d;
+}
+
+// Bis einschließlich der Version mit einem einzigen Suchbegriff stand der
+// in params.keyword. Beim Laden wird daraus die erste Schreibweise.
+function searchKeywords(s) {
+  if (s.keywords && s.keywords.length) return s.keywords;
+  const one = s.keyword || (s.params && s.params.keyword);
+  return one ? [one] : [];
 }
 
 function blank(name) {
@@ -341,7 +346,7 @@ function renderList(st) {
   CFG.searches.forEach((s, i) => {
     const li = document.createElement("li");
     if (i === SEL) li.className = "sel";
-    const kw = s.keyword || (s.params && s.params.keyword) || (s.url ? "aus URL" : "—");
+    const kw = joinW(searchKeywords(s)) || (s.url ? "aus URL" : "—");
     const seen = (st && st.seen_counts && st.seen_counts[s.name]) || 0;
     li.innerHTML =
       '<span class="nm">' + esc(s.name) +
@@ -375,7 +380,7 @@ function renderEditor() {
   const f = s.filter || {};
 
   $("f-name").value = s.name || "";
-  $("f-keyword").value = s.keyword || p.keyword || "";
+  $("f-keyword").value = joinW(searchKeywords(s));
   $("f-url").value = s.url || "";
   $("f-pfrom").value = p.PRICE_FROM || "";
   $("f-pto").value = p.PRICE_TO || "";
@@ -520,7 +525,12 @@ function collect() {
   for (const k of Object.keys(s.params || {}))
     if (KNOWN_PARAMS.indexOf(k) < 0) p[k] = s.params[k];
 
-  if ($("f-keyword").value.trim()) p.keyword = $("f-keyword").value.trim();
+  const kws = words($("f-keyword").value);
+  // Die erste Schreibweise bleibt zusätzlich in params, damit eine hier
+  // gespeicherte Suche auch für ältere Leser der Konfiguration einen
+  // Suchbegriff hat. Abgefragt werden alle aus s.keywords.
+  if (kws.length) { p.keyword = kws[0]; s.keywords = kws; }
+  else { delete s.keywords; }
   if ($("f-pfrom").value) p.PRICE_FROM = String($("f-pfrom").value);
   if ($("f-pto").value) p.PRICE_TO = String($("f-pto").value);
   if ($("f-private").checked) p.ISPRIVATE = "1";
@@ -571,6 +581,7 @@ async function preview() {
     const d = await api("/api/preview", "POST", { search: CFG.searches[SEL] });
     note("ok", d.passed + " von " + d.checked + " geprüften Inseraten kommen durch. " +
                 "Bei willhaben insgesamt: " + d.total_on_willhaben + ".");
+    renderSources(d.sources);
     renderResults(d.results);
   } catch (e) {
     note("err", "Vorschau fehlgeschlagen: " + e.message);
@@ -578,8 +589,27 @@ async function preview() {
   btn.disabled = false; btn.textContent = "Vorschau";
 }
 
+// Zeigt je Schreibweise, was sie liefert und wie viel davon nur sie liefert.
+// Eine Variante mit dauerhaft 0 in der letzten Spalte kann weg, sie kostet
+// nur eine Abfrage je Durchlauf.
+function renderSources(sources) {
+  if (!sources || sources.length < 2) return;
+  let h = '<table><thead><tr><th>Suchbegriff</th><th class="num">bei willhaben</th>' +
+          '<th class="num">geholt</th><th class="num">nur hierüber</th></tr></thead><tbody>';
+  for (const s of sources) {
+    h += '<tr><td>' + esc(s.keyword || "—") + '</td>' +
+      (s.error
+        ? '<td colspan="3">' + esc(s.error) + '</td>'
+        : '<td class="num">' + s.found + '</td>' +
+          '<td class="num">' + s.fetched + '</td>' +
+          '<td class="num">' + s.only_here + '</td>') +
+      '</tr>';
+  }
+  $("res").innerHTML = h + '</tbody></table>';
+}
+
 function renderResults(rows) {
-  if (!rows.length) { $("res").innerHTML = '<div class="empty">Keine Inserate.</div>'; return; }
+  if (!rows.length) { $("res").innerHTML += '<div class="empty">Keine Inserate.</div>'; return; }
   let h = '<table><thead><tr><th></th><th></th><th>Inserat</th>' +
           '<th class="num">Preis</th><th>Ort</th><th>Bewertung</th></tr></thead><tbody>';
   for (const r of rows) {
@@ -596,7 +626,7 @@ function renderResults(rows) {
         (r.km != null ? '<div class="hint">' + r.km + ' km</div>' : '') + '</td>' +
       '<td>' + esc(r.reason || "alle Filter passen") + '</td></tr>';
   }
-  $("res").innerHTML = h + "</tbody></table>";
+  $("res").innerHTML += h + "</tbody></table>";
 }
 
 async function resetState() {

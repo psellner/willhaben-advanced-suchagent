@@ -622,11 +622,14 @@ def recheck_prices(cfg, state, dry_run=False):
     der Preisverfolgung - statt endlos weiter geprüft zu werden.
     """
     tg = cfg.get("telegram", {})
+    meta = state.setdefault("_meta", {})
     try:
         build_id = fetch_build_id()
     except Exception as e:
         log("Preisprüfung (voll): buildId nicht ladbar (%s)" % e)
+        meta["last_error"] = str(e)
         return 0
+    meta.pop("last_error", None)
 
     sent, checked = 0, 0
     for search in cfg.get("searches", []):
@@ -689,6 +692,8 @@ def recheck_prices(cfg, state, dry_run=False):
             prices[ad_id] = ad["price"]
             sent += 1
 
+    meta["checked"] = checked
+    meta["changed"] = sent
     if checked:
         log("Preisprüfung (voll): %d Inserat(e) geprüft, %d Änderung(en)" % (checked, sent))
     return sent

@@ -213,14 +213,18 @@ Inserate liefert (`rows`, Standard 30):
    ohnehin gerade mit abgefragt werden - kostenlos, weil kein zusätzlicher
    Request nötig ist. Fällt ein Inserat aus diesem Fenster (neuere Treffer
    verdrängen es), wird es hier nicht mehr erfasst.
-2. **Im Abstand von `price_check_interval`** (Sekunden, Standard 1800 =
-   30 Minuten, nur in `data/config.json` einstellbar) ruft der Agent für
+2. **Im Abstand von `price_check_interval`** (Standard 30 Minuten, oben in
+   der Oberfläche neben dem Intervall ein-/ausschaltbar) ruft der Agent für
    jedes gemerkte Inserat einzeln dessen Detailseite ab und prüft so auch
    die Treffer außerhalb des Suchfensters. Das kostet einen HTTP-Request
    pro Inserat, deshalb deutlich seltener als der normale Durchlauf, und
    ist je Suche auf die letzten 300 Treffer begrenzt. Nicht mehr aktive
-   Inserate (verkauft, gelöscht, abgelaufen) werden dabei aus der
-   Preisverfolgung entfernt. `0` schaltet diese Stufe ab.
+   Inserate (verkauft, gelöscht, abgelaufen) werden dabei komplett
+   vergessen statt endlos weiter geprüft. Ausgeschaltet läuft nur die
+   erste, kostenlose Stufe weiter.
+
+   Zeitpunkt und Ergebnis des letzten vollen Laufs stehen oben in der
+   Statuszeile.
 
 Die Oberfläche ist standardmäßig ungeschützt. Für den Betrieb auf der NAS
 `UI_USER` und `UI_PASSWORD` in der `.env` setzen, dann verlangt der Server

@@ -8,6 +8,7 @@ Neustart.
 
 Endpunkte:
     GET    /                     Oberfläche
+    GET    /healthz              Healthcheck, ohne Passwortschutz
     GET    /api/state            Konfiguration + Laufzeitstatus
     POST   /api/geocode          Adresse zu Koordinaten (OpenStreetMap)
     POST   /api/reverse          Koordinaten zu Adresse
@@ -206,9 +207,15 @@ class Handler(BaseHTTPRequestHandler):
     # -------------------------------------------------- routes
 
     def do_GET(self):
+        path = self.path.split("?")[0]
+
+        # Vor der Passwortprüfung, damit ein Healthcheck auch mit gesetztem
+        # UI_PASSWORD funktioniert. Gibt nichts Vertrauliches preis.
+        if path == "/healthz":
+            return self.send_json({"ok": True, "last_poll": STATUS["last_poll"]})
+
         if not self.guard():
             return
-        path = self.path.split("?")[0]
 
         if path in ("/", "/index.html"):
             return self.send_file(os.path.join(WEB_DIR, "index.html"),

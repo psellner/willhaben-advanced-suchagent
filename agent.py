@@ -134,6 +134,7 @@ def parse_ad(ad):
         "paylivery": attr(ad, "p2penabled") == "true",
         "coords": parse_coords(attr(ad, "COORDINATES")),
         "id": str(ad.get("id") or attr(ad, "ADID")),
+        "seo": seo,
         "title": attr(ad, "HEADING"),
         "body": attr(ad, "BODY_DYN"),
         "price": price,
@@ -157,6 +158,38 @@ def fetch(search):
     data = json.loads(raw.decode("utf-8"))
     ads = data.get("advertSummaryList", {}).get("advertSummary", []) or []
     return [parse_ad(a) for a in ads], data.get("rowsFound", 0)
+
+
+# Die Suche liefert immer nur die letzten `rows` Inserate (neueste zuerst).
+# Ältere, längst gefundene Treffer fallen aus diesem Fenster und würden nie
+# wieder auf Preisänderungen geprüft. willhabens Detailseite ist als
+# Next.js-App gebaut und lädt ihre Daten clientseitig über genau so eine
+# /_next/data/<buildId>/...json-URL nach - dieselbe Attributsstruktur wie
+# die Suche, aber pro Inserat einzeln abrufbar. Der buildId wechselt bei
+# jedem Deploy, deshalb wird er bei jeder vollen Preisprüfung neu geholt statt
+# gecacht.
+BUILD_ID_RE = re.compile(r'"buildId":"([^"]+)"')
+
+
+def fetch_build_id():
+    raw = http_get("https://www.willhaben.at/iad/kaufen-und-verkaufen/marktplatz",
+                    headers={"User-Agent": UA, "Accept": "text/html"})
+    m = BUILD_ID_RE.search(raw.decode("utf-8", "ignore"))
+    if not m:
+        raise RuntimeError("buildId nicht in der willhaben-Seite gefunden")
+    return m.group(1)
+
+
+def fetch_ad_detail(build_id, seo):
+    """Aktuellen Stand eines einzelnen Inserats über seine Detailseite holen."""
+    url = "https://www.willhaben.at/_next/data/%s/iad/%s.json" % (
+        build_id, seo.rstrip("/"))
+    raw = http_get(url, headers={"Accept": "application/json", "User-Agent": UA})
+    data = json.loads(raw.decode("utf-8"))
+    detail = data["pageProps"]["advertDetails"]
+    parsed = parse_ad(detail)
+    parsed["active"] = (detail.get("advertStatus") or {}).get("id") == "active"
+    return parsed
 
 
 # ---------------------------------------------------------------- filter
@@ -357,10 +390,32 @@ def esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def send_telegram(tg, ad, reach=None):
+def format_price(p):
+    """Preis als Zahl (aus dem Zustand, ohne die willhaben-Anzeigeform)."""
+    if p == int(p):
+        return "%d €" % int(p)
+    return ("%.2f €" % p).replace(".", ",")
+
+
+def send_telegram_message(tg, caption, image=None):
     token = tg["token"]
     chat_id = tg["chat_id"]
 
+    if image:
+        try:
+            http_post_json("https://api.telegram.org/bot%s/sendPhoto" % token,
+                           {"chat_id": chat_id, "photo": image,
+                            "caption": caption, "parse_mode": "HTML"})
+            return
+        except Exception as e:
+            log("  sendPhoto fehlgeschlagen (%s), fallback auf Text" % e)
+
+    http_post_json("https://api.telegram.org/bot%s/sendMessage" % token,
+                   {"chat_id": chat_id, "text": caption, "parse_mode": "HTML",
+                    "disable_web_page_preview": False})
+
+
+def send_telegram(tg, ad, reach=None):
     seller = "privat" if ad["private"] else "gewerblich"
     loc = " ".join(x for x in [ad["postcode"], ad["location"]] if x)
     when = ad["published"].replace("T", " ").replace("Z", "")
@@ -376,19 +431,26 @@ def send_telegram(tg, ad, reach=None):
     caption = ("<b>%s</b>\n%s  ·  %s\n%s  ·  %s%s\n<i>%s</i>\n\n%s") % (
         esc(ad["title"]), esc(ad["price_display"]), seller,
         esc(loc), esc(ad["state"]), extra, esc(when), ad["url"])
+    send_telegram_message(tg, caption, ad["image"])
 
-    if ad["image"]:
-        try:
-            http_post_json("https://api.telegram.org/bot%s/sendPhoto" % token,
-                           {"chat_id": chat_id, "photo": ad["image"],
-                            "caption": caption, "parse_mode": "HTML"})
-            return
-        except Exception as e:
-            log("  sendPhoto fehlgeschlagen (%s), fallback auf Text" % e)
 
-    http_post_json("https://api.telegram.org/bot%s/sendMessage" % token,
-                   {"chat_id": chat_id, "text": caption, "parse_mode": "HTML",
-                    "disable_web_page_preview": False})
+def send_telegram_price_change(tg, ad, old_price, reach=None):
+    seller = "privat" if ad["private"] else "gewerblich"
+    loc = " ".join(x for x in [ad["postcode"], ad["location"]] if x)
+    arrow = "\U0001F53B" if ad["price"] < old_price else "\U0001F53A"   # ▾/▴
+
+    marks = []
+    if ad.get("paylivery"):
+        marks.append("PayLivery")
+    km = distance_km(ad, reach)
+    if km is not None:
+        marks.append("%.0f km" % km)
+    extra = ("\n" + esc(" · ".join(marks))) if marks else ""
+
+    caption = ("%s <b>Preisänderung</b>\n<b>%s</b>\n%s → %s  ·  %s\n%s  ·  %s%s\n\n%s") % (
+        arrow, esc(ad["title"]), format_price(old_price), esc(ad["price_display"]),
+        seller, esc(loc), esc(ad["state"]), extra, ad["url"])
+    send_telegram_message(tg, caption, ad["image"])
 
 
 # ---------------------------------------------------------------- config/state
@@ -415,6 +477,7 @@ def load_config():
     with CONFIG_LOCK:
         cfg = load_json(CONFIG_PATH, {}) or {}
     cfg.setdefault("poll_interval", 60)
+    cfg.setdefault("price_check_interval", 1800)
     cfg.setdefault("searches", [])
     tg = cfg.setdefault("telegram", {})
     # Env gewinnt, damit der Token nicht in der config stehen muss.
@@ -433,50 +496,217 @@ def save_config(cfg):
 
 # ---------------------------------------------------------------- durchlauf
 
+# Wie viele der zuletzt gesehenen Treffer pro Suche für die volle
+# Preisprüfung vorgemerkt bleiben (dort kostet jede Preisprüfung einen
+# eigenen HTTP-Request). Kleiner als MAX_SEEN_PER_SEARCH, damit eine Suche
+# mit vielen alten Treffern die volle Prüfung nicht ausufern lässt.
+MAX_TRACKED_PRICES = 300
+
+
+def search_entry(state, name):
+    """Zustand einer Suche holen, altes Format (nur Liste von IDs) migrieren."""
+    entry = state.setdefault(name, {})
+    if isinstance(entry, list):
+        entry = {"seen": entry, "prices": {}, "seo": {}}
+        state[name] = entry
+    entry.setdefault("seen", [])
+    entry.setdefault("prices", {})
+    entry.setdefault("seo", {})
+    return entry
+
+
+def seen_ids(entry):
+    return entry["seen"] if isinstance(entry, dict) else entry
+
+
 def run_search(tg, search, state, dry_run=False):
     name = search.get("name") or "unbenannt"
-    seen = state.setdefault(name, [])
+    entry = search_entry(state, name)
+    seen = entry["seen"]
+    prices = entry["prices"]
+    seo_map = entry["seo"]
     seen_set = set(seen)
     first_run = not seen_set
     if dry_run:
         # Im Trockenlauf soll sichtbar werden, was durchkäme.
         first_run = False
 
+    def track(ad):
+        prices[ad["id"]] = ad["price"]
+        if ad.get("seo"):
+            seo_map[ad["id"]] = ad["seo"]
+
     ads, _ = fetch(search)
     if not ads:
         log("%s: 0 Treffer zurück - Suche prüfen" % name)
         return 0
 
+    reach = (search.get("filter") or {}).get("reach")
     new = [a for a in ads if a["id"] not in seen_set]
     new.reverse()   # ältestes zuerst, damit die Chat-Reihenfolge stimmt
 
     sent, failed = 0, set()
+
+    # Preisänderungen bei Inseraten, die schon bekannt sind und weiter zum
+    # Filter passen. Preis 0 heißt "keine Angabe" und zählt nicht als
+    # Änderung; ohne bekannten alten Preis (z.B. nach Migration) wird der
+    # Preis nur stumm gemerkt, es gibt sonst eine Phantom-Meldung.
+    for ad in ads:
+        if ad["id"] not in seen_set:
+            continue
+        ok, _ = matches(ad, search.get("filter"))
+        if not ok:
+            continue
+        old_price = prices.get(ad["id"])
+        if not (old_price and ad["price"] and old_price != ad["price"]):
+            track(ad)
+            continue
+        if dry_run:
+            log("%s: [DRY] Preisänderung %s -> %s | %s"
+                % (name, format_price(old_price), ad["price_display"], ad["title"][:60]))
+        else:
+            try:
+                send_telegram_price_change(tg, ad, old_price, reach)
+                log("%s: PREISÄNDERUNG %s -> %s | %s"
+                    % (name, format_price(old_price), ad["price_display"], ad["title"][:60]))
+            except Exception as e:
+                log("%s: Telegram-Fehler bei Preisänderung (%s) - erneuter Versuch später"
+                    % (name, e))
+                continue    # alten Preis behalten, damit die Änderung erneut auffällt
+        track(ad)
+        sent += 1
+
     for ad in new:
         ok, why = matches(ad, search.get("filter"))
         if not ok:
             continue
         if first_run:
+            track(ad)
             continue
         if dry_run:
             log("%s: [DRY] %s | %s" % (name, ad["price_display"], ad["title"][:60]))
         else:
             try:
-                send_telegram(tg, ad, (search.get("filter") or {}).get("reach"))
+                send_telegram(tg, ad, reach)
                 log("%s: TREFFER %s | %s" % (name, ad["price_display"], ad["title"][:60]))
             except Exception as e:
                 log("%s: Telegram-Fehler (%s) - erneuter Versuch später" % (name, e))
                 failed.add(ad["id"])
                 continue
+        track(ad)
         sent += 1
 
     # Nicht zugestellte Treffer bleiben ungemerkt, damit sie wiederkommen.
     fresh = [a["id"] for a in ads if a["id"] not in seen_set and a["id"] not in failed]
-    state[name] = (fresh + seen)[:MAX_SEEN_PER_SEARCH]
+    entry["seen"] = (fresh + seen)[:MAX_SEEN_PER_SEARCH]
+    # Preise/SEO-Pfade nur für die neuesten Treffer behalten - das begrenzt
+    # sowohl den Speicher als auch die Kosten der vollen Preisprüfung.
+    kept = set(entry["seen"][:MAX_TRACKED_PRICES])
+    entry["prices"] = {k: v for k, v in prices.items() if k in kept}
+    entry["seo"] = {k: v for k, v in seo_map.items() if k in kept}
 
     if first_run:
         log("%s: Erstlauf, %d Inserate als bekannt markiert (keine Meldung)"
             % (name, len(ads)))
     return sent
+
+
+def recheck_prices(cfg, state, dry_run=False):
+    """Volle Preisprüfung über alle gemerkten Treffer, auch außerhalb des
+    Abfragefensters (`rows`) der normalen Suche.
+
+    Kostet pro Inserat einen eigenen HTTP-Request an die willhaben-
+    Detailseite, deshalb deutlich seltener als der normale Durchlauf.
+    Inserate, die nicht mehr aktiv sind (verkauft/gelöscht/abgelaufen),
+    werden komplett vergessen - auch aus der `seen`-Liste, nicht nur aus
+    der Preisverfolgung - statt endlos weiter geprüft zu werden.
+    """
+    tg = cfg.get("telegram", {})
+    try:
+        build_id = fetch_build_id()
+    except Exception as e:
+        log("Preisprüfung (voll): buildId nicht ladbar (%s)" % e)
+        return 0
+
+    sent, checked = 0, 0
+    for search in cfg.get("searches", []):
+        if search.get("enabled") is False:
+            continue
+        name = search.get("name") or "unbenannt"
+        entry = search_entry(state, name)
+        prices = entry["prices"]
+        seo_map = entry["seo"]
+        reach = (search.get("filter") or {}).get("reach")
+
+        def forget(ad_id):
+            """Ein bestätigt verschwundenes Inserat komplett vergessen, nicht
+            nur aus der Preisverfolgung - sonst blockiert es bis zum
+            Herausfallen aus MAX_SEEN_PER_SEARCH unnötig einen Platz."""
+            prices.pop(ad_id, None)
+            seo_map.pop(ad_id, None)
+            if ad_id in entry["seen"]:
+                entry["seen"].remove(ad_id)
+
+        for ad_id, seo in list(seo_map.items()):
+            checked += 1
+            try:
+                ad = fetch_ad_detail(build_id, seo)
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    forget(ad_id)
+                else:
+                    log("%s: Preisprüfung %s fehlgeschlagen (HTTP %s)"
+                        % (name, ad_id, e.code))
+                continue
+            except Exception as e:
+                log("%s: Preisprüfung %s fehlgeschlagen (%s)" % (name, ad_id, e))
+                continue
+            finally:
+                time.sleep(0.3)    # willhaben nicht mit Einzelabfragen bombardieren
+
+            if not ad["active"]:
+                forget(ad_id)
+                continue
+
+            old_price = prices.get(ad_id)
+            if not (old_price and ad["price"] and old_price != ad["price"]):
+                if ad["price"]:
+                    prices[ad_id] = ad["price"]
+                continue
+
+            if dry_run:
+                log("%s: [DRY] Preisänderung (voll) %s -> %s | %s"
+                    % (name, format_price(old_price), ad["price_display"], ad["title"][:60]))
+            else:
+                try:
+                    send_telegram_price_change(tg, ad, old_price, reach)
+                    log("%s: PREISÄNDERUNG (voll) %s -> %s | %s"
+                        % (name, format_price(old_price), ad["price_display"], ad["title"][:60]))
+                except Exception as e:
+                    log("%s: Telegram-Fehler bei Preisänderung (%s) - erneuter Versuch später"
+                        % (name, e))
+                    continue
+            prices[ad_id] = ad["price"]
+            sent += 1
+
+    if checked:
+        log("Preisprüfung (voll): %d Inserat(e) geprüft, %d Änderung(en)" % (checked, sent))
+    return sent
+
+
+def maybe_recheck_prices(cfg, state, dry_run=False):
+    """Löst recheck_prices() nur im Abstand von `price_check_interval` aus."""
+    interval = int(os.environ.get(
+        "PRICE_CHECK_INTERVAL", cfg.get("price_check_interval")) or 0)
+    if interval <= 0 or dry_run:
+        return 0
+    meta = state.setdefault("_meta", {})
+    last = meta.get("last_price_check", 0)
+    now_ts = time.time()
+    if now_ts - last < interval:
+        return 0
+    meta["last_price_check"] = now_ts
+    return recheck_prices(cfg, state, dry_run)
 
 
 def poll_once(cfg, dry_run=False, status=None):
@@ -504,6 +734,12 @@ def poll_once(cfg, dry_run=False, status=None):
             log("%s: Fehler %s" % (name, e))
             if status is not None:
                 status[name] = {"error": str(e)}
+
+    try:
+        sent += maybe_recheck_prices(cfg, state, dry_run)
+    except Exception as e:
+        errors += 1
+        log("Preisprüfung (voll): Fehler %s" % e)
 
     if not dry_run:
         save_json(STATE_PATH, state)

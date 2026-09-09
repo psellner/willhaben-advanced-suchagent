@@ -1,5 +1,6 @@
 {
   "poll_interval": 60,
+  "price_check_interval": 1800,
   "searches": [
     {
       "name": "beispiel",

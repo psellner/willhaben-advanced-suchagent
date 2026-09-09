@@ -261,6 +261,13 @@ def fetch_build_id():
     return m.group(1)
 
 
+# Zustände, in denen es das Inserat noch gibt. "reserved" gehört dazu: eine
+# Reservierung ist keine Löschung, sie platzt oft genug, und ein Preisrutsch
+# darauf bleibt interessant. Alles andere (verkauft, abgelaufen, gelöscht)
+# gilt als weg und wird aus der Preisverfolgung genommen.
+LIVE_STATUS = ("active", "reserved")
+
+
 def fetch_ad_detail(build_id, seo):
     """Aktuellen Stand eines einzelnen Inserats über seine Detailseite holen."""
     url = "https://www.willhaben.at/_next/data/%s/iad/%s.json" % (
@@ -269,7 +276,8 @@ def fetch_ad_detail(build_id, seo):
     data = json.loads(raw.decode("utf-8"))
     detail = data["pageProps"]["advertDetails"]
     parsed = parse_ad(detail)
-    parsed["active"] = (detail.get("advertStatus") or {}).get("id") == "active"
+    parsed["status"] = (detail.get("advertStatus") or {}).get("id") or ""
+    parsed["active"] = parsed["status"] in LIVE_STATUS
     return parsed
 
 
@@ -760,7 +768,7 @@ def recheck_prices(cfg, state, dry_run=False):
         return 0
     meta.pop("last_error", None)
 
-    sent, checked = 0, 0
+    sent, checked, dropped = 0, 0, 0
     for search in cfg.get("searches", []):
         if search.get("enabled") is False:
             continue
@@ -771,13 +779,17 @@ def recheck_prices(cfg, state, dry_run=False):
         reach = (search.get("filter") or {}).get("reach")
 
         def forget(ad_id):
-            """Ein bestätigt verschwundenes Inserat komplett vergessen, nicht
-            nur aus der Preisverfolgung - sonst blockiert es bis zum
-            Herausfallen aus MAX_SEEN_PER_SEARCH unnötig einen Platz."""
+            """Ein verschwundenes Inserat aus der Preisverfolgung nehmen.
+
+            Die `seen`-Liste bleibt bewusst unangetastet: sie ist das
+            Gedächtnis, was schon gemeldet wurde. Eine ID dort zu streichen,
+            die die Suche weiterhin liefert, macht das Inserat im nächsten
+            Durchlauf wieder zum "neuen" Treffer - und das bei jedem
+            Durchlauf erneut. Der Platz, den die ID belegt, ist dagegen
+            vernachlässigbar; sie fällt ohnehin aus MAX_SEEN_PER_SEARCH.
+            """
             prices.pop(ad_id, None)
             seo_map.pop(ad_id, None)
-            if ad_id in entry["seen"]:
-                entry["seen"].remove(ad_id)
 
         for ad_id, seo in list(seo_map.items()):
             checked += 1
@@ -797,6 +809,9 @@ def recheck_prices(cfg, state, dry_run=False):
                 time.sleep(0.3)    # willhaben nicht mit Einzelabfragen bombardieren
 
             if not ad["active"]:
+                dropped += 1
+                log("%s: %s nicht mehr verfügbar (%s) - Preisverfolgung beendet"
+                    % (name, ad_id, ad.get("status") or "unbekannt"))
                 forget(ad_id)
                 continue
 
@@ -823,8 +838,10 @@ def recheck_prices(cfg, state, dry_run=False):
 
     meta["checked"] = checked
     meta["changed"] = sent
+    meta["dropped"] = dropped
     if checked:
-        log("Preisprüfung (voll): %d Inserat(e) geprüft, %d Änderung(en)" % (checked, sent))
+        log("Preisprüfung (voll): %d Inserat(e) geprüft, %d Änderung(en), "
+            "%d nicht mehr verfügbar" % (checked, sent, dropped))
     return sent
 
 

@@ -254,10 +254,17 @@ Inserate liefert (`rows`, Standard 30):
    jedes gemerkte Inserat einzeln dessen Detailseite ab und prüft so auch
    die Treffer außerhalb des Suchfensters. Das kostet einen HTTP-Request
    pro Inserat, deshalb deutlich seltener als der normale Durchlauf, und
-   ist je Suche auf die letzten 300 Treffer begrenzt. Nicht mehr aktive
-   Inserate (verkauft, gelöscht, abgelaufen) werden dabei komplett
-   vergessen statt endlos weiter geprüft. Ausgeschaltet läuft nur die
-   erste, kostenlose Stufe weiter.
+   ist je Suche auf die letzten 300 Treffer begrenzt. Inserate, die es nicht
+   mehr gibt (verkauft, gelöscht, abgelaufen), fallen dabei aus der
+   Preisverfolgung statt endlos weiter geprüft zu werden. Reservierte
+   Inserate zählen ausdrücklich nicht dazu: eine Reservierung platzt oft
+   genug, und ein Preisrutsch darauf bleibt interessant.
+
+   Aus der `seen`-Liste wird dabei nichts entfernt. Die Liste ist das
+   Gedächtnis, was schon gemeldet wurde. Eine ID dort zu streichen, die die
+   Suche weiterhin liefert, macht das Inserat im nächsten Durchlauf wieder
+   zum neuen Treffer — und das bei jedem Durchlauf erneut.
+   Ausgeschaltet läuft nur die erste, kostenlose Stufe weiter.
 
    Zeitpunkt und Ergebnis des letzten vollen Laufs stehen oben in der
    Statuszeile.

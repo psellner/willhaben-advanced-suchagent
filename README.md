@@ -198,6 +198,30 @@ Schlägt der Telegram-Versand fehl, wird die Inserats-ID **nicht** als
 gesehen vermerkt. Der nächste Durchlauf versucht es erneut, statt den
 Treffer still zu verlieren.
 
+### Preisänderungen
+
+Für jedes Inserat, das einmal zum Filter passte, merkt sich der Agent den
+Preis. Ändert er sich, kommt eine eigene Telegram-Meldung mit altem und
+neuem Preis. Das gilt auch für Inserate aus dem stummen Erstlauf einer
+Suche. Schlägt der Versand fehl, bleibt der alte Preis gemerkt, damit die
+Änderung beim nächsten Durchlauf erneut auffällt.
+
+Das läuft zweistufig, weil die normale Suche nur die zuletzt abgefragten
+Inserate liefert (`rows`, Standard 30):
+
+1. **Bei jedem Durchlauf** wird der Preis der Inserate verglichen, die
+   ohnehin gerade mit abgefragt werden - kostenlos, weil kein zusätzlicher
+   Request nötig ist. Fällt ein Inserat aus diesem Fenster (neuere Treffer
+   verdrängen es), wird es hier nicht mehr erfasst.
+2. **Im Abstand von `price_check_interval`** (Sekunden, Standard 1800 =
+   30 Minuten, nur in `data/config.json` einstellbar) ruft der Agent für
+   jedes gemerkte Inserat einzeln dessen Detailseite ab und prüft so auch
+   die Treffer außerhalb des Suchfensters. Das kostet einen HTTP-Request
+   pro Inserat, deshalb deutlich seltener als der normale Durchlauf, und
+   ist je Suche auf die letzten 300 Treffer begrenzt. Nicht mehr aktive
+   Inserate (verkauft, gelöscht, abgelaufen) werden dabei aus der
+   Preisverfolgung entfernt. `0` schaltet diese Stufe ab.
+
 Die Oberfläche ist standardmäßig ungeschützt. Für den Betrieb auf der NAS
 `UI_USER` und `UI_PASSWORD` in der `.env` setzen, dann verlangt der Server
 HTTP-Basic-Auth.

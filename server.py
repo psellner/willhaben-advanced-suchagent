@@ -229,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
                 "config": cfg,
                 "telegram_ready": bool(tg.get("token") and tg.get("chat_id")),
                 "status": STATUS,
-                "seen_counts": {k: len(v) for k, v in seen.items()},
+                "seen_counts": {k: len(agent.seen_ids(v)) for k, v in seen.items()},
             })
 
         self.send_error(404)

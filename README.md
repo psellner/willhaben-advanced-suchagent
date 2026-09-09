@@ -1,4 +1,4 @@
-# willhaben-agent
+# willhaben-advanced-suchagent
 
 Eigener Suchagent für willhaben mit Weboberfläche und Telegram-Push. Fragt
 beliebig viele Suchen im Minutentakt ab statt zweimal am Tag.

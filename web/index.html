@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>willhaben-Suchagenten</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --panel:#fff; --line:#e2e5ea; --ink:#1a1d21; --dim:#6b7280;
+    --accent:#0b6ea8; --ok:#15803d; --okbg:#eaf6ee; --no:#9a3412; --nobg:#fdf1ea;
+    --helpbg:#eef4f9; --chip:#eaeef3; --radius:10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#14171a; --panel:#1c2024; --line:#2e343a; --ink:#e6e8ea; --dim:#9aa3ad;
+      --accent:#4aa3d8; --ok:#6ee7a8; --okbg:#16281d; --no:#f0a882; --nobg:#2a1d17;
+      --helpbg:#1a2530; --chip:#262c33;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+           padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; font-weight:650; }
+  .stat { color:var(--dim); font-size:12.5px; }
+  .stat b { color:var(--ink); font-weight:600; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px;
+         background:var(--ok); }
+  .dot.bad { background:var(--no); }
+  .spacer { flex:1; }
+
+  main { display:grid; grid-template-columns:290px 1fr; gap:18px; padding:18px 20px;
+         align-items:start; }
+  @media (max-width:900px) { main { grid-template-columns:1fr; } }
+
+  .panel { background:var(--panel); border:1px solid var(--line);
+           border-radius:var(--radius); padding:16px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em;
+              color:var(--dim); margin:0 0 12px; font-weight:600; }
+
+  .slist { list-style:none; margin:0; padding:0; }
+  .slist li { display:flex; align-items:center; gap:9px; padding:9px 10px;
+              border-radius:8px; cursor:pointer; }
+  .slist li:hover { background:var(--bg); }
+  .slist li.sel { background:var(--bg); box-shadow:inset 2px 0 0 var(--accent); }
+  .slist .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+               white-space:nowrap; font-weight:550; }
+  .slist .sub { display:block; font-weight:400; font-size:12px; color:var(--dim); }
+  .pill { font-size:11px; padding:1px 7px; border-radius:99px; background:var(--bg);
+          border:1px solid var(--line); color:var(--dim); }
+
+  label { display:block; font-size:12.5px; color:var(--dim); margin:14px 0 4px; }
+  label b { color:var(--ink); font-weight:600; font-size:13px; }
+  input[type=text], input[type=number], textarea, select {
+    width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:7px;
+    background:var(--bg); color:var(--ink); font:inherit; font-size:13px; }
+  textarea { min-height:70px; resize:vertical;
+             font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12.5px; }
+  input:focus, textarea:focus, select:focus { outline:2px solid var(--accent);
+                                              outline-offset:-1px; }
+  .hint { font-size:11.5px; color:var(--dim); margin-top:4px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+  .check { display:flex; align-items:center; gap:8px; margin-top:14px; font-size:13px;
+           color:var(--ink); }
+  .check input { width:auto; }
+
+  .chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; min-height:0; }
+  .chip { font-size:11.5px; padding:2px 8px; border-radius:99px;
+          background:var(--chip); color:var(--dim); }
+
+  .q { display:inline-flex; align-items:center; justify-content:center;
+       width:15px; height:15px; padding:0; margin-left:5px; vertical-align:-2px;
+       border:1px solid var(--line); border-radius:50%; background:var(--panel);
+       color:var(--dim); font-size:10.5px; font-weight:700; line-height:1; cursor:pointer; }
+  .q:hover, .q[aria-expanded="true"] { border-color:var(--accent); color:var(--accent); }
+  .help { display:none; margin-top:6px; padding:9px 11px; border-radius:7px;
+          background:var(--helpbg); font-size:12.5px; line-height:1.55;
+          border-left:3px solid var(--accent); }
+  .help.on { display:block; }
+  .help em { font-style:normal; color:var(--dim); }
+  code { background:var(--chip); padding:1px 5px; border-radius:4px; font-size:12px;
+         font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+
+  button { font:inherit; font-size:13px; padding:7px 13px; border-radius:7px;
+           border:1px solid var(--line); background:var(--panel); color:var(--ink);
+           cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger:hover { border-color:var(--no); color:var(--no); }
+  button:disabled { opacity:.5; cursor:default; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:16px;
+         padding-top:14px; border-top:1px solid var(--line); }
+
+  fieldset { border:1px solid var(--line); border-radius:8px; padding:2px 14px 16px;
+             margin:18px 0 0; }
+  legend { font-size:12px; color:var(--dim); padding:0 6px; }
+
+  details { margin-top:16px; border:1px solid var(--line); border-radius:8px;
+            padding:0 14px; }
+  details summary { cursor:pointer; padding:11px 0; font-size:13px; font-weight:550; }
+  details[open] summary { border-bottom:1px solid var(--line); margin-bottom:6px; }
+  details table { width:100%; border-collapse:collapse; font-size:12.5px; margin:8px 0 14px; }
+  details td { padding:5px 8px 5px 0; vertical-align:top; border-bottom:1px solid var(--line); }
+  details td:first-child { white-space:nowrap; width:1%; }
+
+  .res { margin-top:16px; }
+  .res table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  .res th { text-align:left; color:var(--dim); font-weight:600; font-size:11.5px;
+            text-transform:uppercase; letter-spacing:.03em; padding:6px 8px;
+            border-bottom:1px solid var(--line); }
+  .res td { padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .res tr.pass td:first-child { box-shadow:inset 3px 0 0 var(--ok); }
+  .res tr.fail { color:var(--dim); }
+  .res tr.fail td:first-child { box-shadow:inset 3px 0 0 var(--no); }
+  .res a { color:var(--accent); text-decoration:none; }
+  .res a:hover { text-decoration:underline; }
+  .tag { font-size:11px; padding:1px 6px; border-radius:5px; white-space:nowrap; }
+  .tag.y { background:var(--okbg); color:var(--ok); }
+  .tag.n { background:var(--nobg); color:var(--no); }
+  .num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .thumb { width:52px; height:39px; object-fit:cover; border-radius:5px;
+           background:var(--bg); display:block; }
+
+  .msg { margin-top:12px; padding:9px 12px; border-radius:7px; font-size:12.5px; }
+  .msg.ok { background:var(--okbg); color:var(--ok); }
+  .msg.err { background:var(--nobg); color:var(--no); }
+  .empty { color:var(--dim); padding:26px 0; text-align:center; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>willhaben-Suchagenten</h1>
+  <span class="stat" id="hdrStatus"></span>
+  <span class="stat" id="dirty" style="color:var(--no)"></span>
+  <span class="spacer"></span>
+  <span class="stat">Intervall
+    <input type="number" id="interval" min="30" max="3600" step="10"
+           style="width:70px;display:inline-block;padding:3px 6px"> s</span>
+  <button id="btnTest">Telegram testen</button>
+  <button class="primary" id="btnSave">Speichern</button>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Suchen</h2>
+    <ul class="slist" id="list"></ul>
+    <div class="bar">
+      <button id="btnAdd">Neue Suche</button>
+      <button id="btnAddUrl">Aus URL</button>
+    </div>
+  </section>
+
+  <section class="panel" id="editor">
+    <div class="empty">Keine Suche ausgewählt.</div>
+  </section>
+</main>
+
+<template id="tpl">
+  <h2>Suche bearbeiten</h2>
+
+  <div class="row">
+    <div>
+      <label for="f-name"><b>Name</b> <button type="button" class="q" data-h="name">?</button></label>
+      <input type="text" id="f-name" placeholder="ps5-konsole">
+      <div class="help" data-help="name"></div>
+    </div>
+    <div>
+      <label for="f-keyword"><b>Suchbegriff</b> <button type="button" class="q" data-h="keyword">?</button></label>
+      <input type="text" id="f-keyword" placeholder="playstation 5">
+      <div class="help" data-help="keyword"></div>
+    </div>
+  </div>
+
+  <label for="f-url">Oder komplette willhaben-URL aus dem Browser
+    <button type="button" class="q" data-h="url">?</button></label>
+  <input type="text" id="f-url" placeholder="https://www.willhaben.at/iad/kaufen-und-verkaufen/marktplatz?keyword=...">
+  <div class="help" data-help="url"></div>
+
+  <fieldset>
+    <legend>Preis und Anbieter</legend>
+    <div class="row3">
+      <div>
+        <label for="f-pfrom">Preis ab (€) <button type="button" class="q" data-h="price">?</button></label>
+        <input type="number" id="f-pfrom">
+      </div>
+      <div><label for="f-pto">Preis bis (€)</label><input type="number" id="f-pto"></div>
+      <div>
+        <label for="f-rows">Inserate je Abfrage <button type="button" class="q" data-h="rows">?</button></label>
+        <input type="number" id="f-rows" min="10" max="100">
+      </div>
+    </div>
+    <div class="help" data-help="price"></div>
+    <div class="help" data-help="rows"></div>
+    <label class="check"><input type="checkbox" id="f-private"> nur Privatanbieter, keine Händler</label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Erreichbarkeit</legend>
+    <label for="f-reach">Wie du an die Ware kommst
+      <button type="button" class="q" data-h="reach">?</button></label>
+    <select id="f-reach">
+      <option value="off">egal</option>
+      <option value="paylivery">nur mit PayLivery</option>
+      <option value="radius">nur im Umkreis</option>
+      <option value="paylivery_or_radius">PayLivery oder im Umkreis</option>
+    </select>
+    <div class="help" data-help="reach"></div>
+
+    <div id="reachGeo">
+      <div class="row">
+        <div>
+          <label for="f-addr">Von wo aus <button type="button" class="q" data-h="geo">?</button></label>
+          <input type="text" id="f-addr" placeholder="Adresse, Ort oder Postleitzahl">
+        </div>
+        <div><label for="f-km">Umkreis (km)</label><input type="number" id="f-km" min="1" max="600"></div>
+      </div>
+      <div class="bar" style="border:0;padding:0;margin-top:10px">
+        <button type="button" id="btnAddr">Adresse suchen</button>
+        <button type="button" id="btnGeo">Mein Standort</button>
+        <span class="hint" id="geoMsg" style="margin:0"></span>
+      </div>
+      <ul class="slist" id="geoHits" style="margin-top:8px"></ul>
+      <div class="help" data-help="geo"></div>
+      <input type="hidden" id="f-lat"><input type="hidden" id="f-lon">
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Welche Inserate willst du sehen</legend>
+    <div class="hint" style="margin:10px 0 0">
+      Einfach Wörter eintippen, mit Komma getrennt. Groß- und Kleinschreibung
+      ist egal, einfache Mehrzahlformen werden mitgetroffen.
+    </div>
+
+    <label for="f-req"><b>Der Titel muss eines dieser Wörter enthalten</b>
+      <button type="button" class="q" data-h="req">?</button></label>
+    <input type="text" id="f-req" placeholder="ps 5, playstation 5">
+    <div class="chips" data-chips="f-req"></div>
+    <div class="help" data-help="req"></div>
+
+    <label for="f-blocktitle"><b>Nie, wenn eines dieser Wörter im Titel steht</b>
+      <button type="button" class="q" data-h="blocktitle">?</button></label>
+    <input type="text" id="f-blocktitle" placeholder="ps 4, playstation 3, suche, tausche">
+    <div class="chips" data-chips="f-blocktitle"></div>
+    <div class="help" data-help="blocktitle"></div>
+
+    <label for="f-blockmain"><b>Nicht, wenn das der Hauptartikel ist</b>
+      <button type="button" class="q" data-h="blockmain">?</button></label>
+    <input type="text" id="f-blockmain" placeholder="spiel, controller, tasche, headset">
+    <div class="chips" data-chips="f-blockmain"></div>
+    <div class="help" data-help="blockmain"></div>
+
+    <label for="f-blocktext">Nicht, wenn eines dieser Wörter in der Beschreibung steht
+      <button type="button" class="q" data-h="blocktext">?</button></label>
+    <input type="text" id="f-blocktext" placeholder="defekt, bastler, ersatzteil">
+    <div class="chips" data-chips="f-blocktext"></div>
+    <div class="help" data-help="blocktext"></div>
+  </fieldset>
+
+
+  <div class="bar">
+    <label class="check" style="margin:0 8px 0 0"><input type="checkbox" id="f-enabled"> aktiv</label>
+    <button class="primary" id="btnPreview">Vorschau</button>
+    <button id="btnReset">Zustand verwerfen</button>
+    <span class="spacer"></span>
+    <button class="danger" id="btnDel">Löschen</button>
+  </div>
+
+  <div id="msg"></div>
+  <div class="res" id="res"></div>
+</template>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let CFG = { poll_interval: 60, searches: [] };
+let SEL = -1;
+// Solange ungespeicherte Änderungen offen sind, darf die Statusabfrage im
+// Hintergrund die Konfiguration nicht ersetzen und den Editor nicht neu
+// aufbauen - das würde die Eingaben verwerfen.
+let DIRTY = false;
+
+// willhaben-Parameter mit eigenem Feld. Alles andere landet im Freitextfeld,
+// damit nichts verloren geht, was die Oberfläche nicht kennt.
+const KNOWN_PARAMS = ["keyword", "PRICE_FROM", "PRICE_TO", "ISPRIVATE"];
+
+const HELP = {
+  name: "Führt den Zustand dieser Suche. Beim Umbenennen gilt sie als neu: der nächste Lauf markiert den aktuellen Bestand stumm und meldet erst danach wieder.",
+  keyword: "Das, was du auch oben in das Suchfeld auf willhaben tippen würdest. Wird mitgeschickt, filtert also schon dort.",
+  url: "Am bequemsten: die Suche im Browser auf willhaben einstellen und die Adresszeile hier einfügen. Alle dort gesetzten Filter bleiben erhalten, auch Kategorie und Bundesland. Ist eine URL gesetzt, gewinnt sie gegenüber Suchbegriff und Preisfeldern.",
+  price: "Preisgrenze direkt bei willhaben. Das reduziert die Treffermenge schon vor dem Abruf und ist der wirksamste Filter überhaupt.",
+  rows: "Wie viele der neuesten Inserate je Abfrage geholt werden. 30 genügt im Minutentakt weit. Höher nur, wenn deine Suche mehr als 30 Neuzugänge pro Intervall hat.",
+  reach: "willhaben kann nur „nur PayLivery“. Die Oder-Verknüpfung rechnet der Agent selbst: ein Inserat kommt durch, wenn es entweder per PayLivery versendet wird oder nah genug liegt, um es abzuholen. Praktisch, wenn dir beides recht ist, aber nicht ein Versand quer durchs Land ohne Käuferschutz.",
+  geo: "Der Bezugspunkt für die Entfernung, gerechnet als Luftlinie. Adresse, Ort oder Postleitzahl eintippen und auf Suchen drücken, dann bei mehreren Treffern den richtigen wählen. „Mein Standort“ fragt den Browser und trägt die gefundene Adresse ein. Gesucht wird nur in Österreich. Die Suche läuft über OpenStreetMap, dorthin geht also der Suchtext beziehungsweise die Koordinaten; gespeichert wird alles nur in deiner eigenen Konfiguration.",
+  req: "Mindestens eines dieser Wörter muss im Titel stehen, sonst wird das Inserat verworfen. Der wirksamste Filter, weil er alles aussortiert, was gar nicht dein Produkt ist. — Tipp: schreib mehrteilige Begriffe mit Leerzeichen. Fehlende Leerzeichen werden mitgetroffen, zusätzliche nicht. „play station 5“ findet deshalb auch PlayStation 5 und Playstation5, umgekehrt findet „playstation 5“ die getrennte Schreibweise nicht. Für PS5 brauchst du zusätzlich „ps 5“.",
+  blocktitle: "Kommt eines dieser Wörter irgendwo im Titel vor, ist das Inserat draußen. Gedacht für falsche Produkte und für Leute, die selbst etwas suchen statt verkaufen. — Beispiel: „ps 4, playstation 3, suche, tausche“.",
+  blockmain: "Wie oben, aber es zählt nur der Anfang des Titels bis zur ersten Aufzählung. Damit schließt du Zubehör aus, ohne gute Bundles zu verlieren: „Playstation 5 Spiele“ fliegt raus, „PS5 Slim Digital + 2 Controller“ bleibt drin, weil der Controller dort nur eine Beigabe ist. Genau dafür gibt es dieses Feld getrennt vom Feld darüber.",
+  blocktext: "Durchsucht auch den Beschreibungstext, nicht nur den Titel. Gedacht für Angaben, die selten in die Überschrift wandern. — Beispiel: „defekt, bastler, ersatzteil“.",
+};
+
+const words = (s) => (s || "").split(/[,\n]/).map(x => x.trim()).filter(Boolean);
+const joinW = (a) => (a || []).join(", ");
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function api(path, method, body) {
+  const r = await fetch(path, {
+    method: method || "GET",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : null
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+  return d;
+}
+
+function blank(name) {
+  return {
+    name: name || "neue-suche", enabled: true, rows: 30,
+    path: "kaufen-und-verkaufen/marktplatz", params: {},
+    filter: { private_only: true }
+  };
+}
+
+// ------------------------------------------------------------ liste
+
+function renderList(st) {
+  const ul = $("list");
+  ul.innerHTML = "";
+  if (!CFG.searches.length) {
+    ul.innerHTML = '<li style="cursor:default;color:var(--dim)">noch keine Suche</li>';
+    return;
+  }
+  CFG.searches.forEach((s, i) => {
+    const li = document.createElement("li");
+    if (i === SEL) li.className = "sel";
+    const kw = s.keyword || (s.params && s.params.keyword) || (s.url ? "aus URL" : "—");
+    const seen = (st && st.seen_counts && st.seen_counts[s.name]) || 0;
+    li.innerHTML =
+      '<span class="nm">' + esc(s.name) +
+      '<span class="sub">' + esc(kw) + ' · ' + seen + ' bekannt</span></span>' +
+      '<span class="pill">' + (s.enabled === false ? "aus" : "an") + '</span>';
+    li.onclick = () => { SEL = i; renderAll(); };
+    ul.appendChild(li);
+  });
+}
+
+// ------------------------------------------------------------ editor
+
+function paintChips(ed) {
+  ed.querySelectorAll(".chips").forEach(box => {
+    const val = $(box.dataset.chips).value;
+    box.innerHTML = words(val).map(w => '<span class="chip">' + esc(w) + '</span>').join("");
+  });
+}
+
+function renderEditor() {
+  const ed = $("editor");
+  if (SEL < 0 || !CFG.searches[SEL]) {
+    ed.innerHTML = '<div class="empty">Keine Suche ausgewählt.</div>';
+    return;
+  }
+  ed.innerHTML = "";
+  ed.appendChild($("tpl").content.cloneNode(true));
+
+  const s = CFG.searches[SEL];
+  const p = s.params || {};
+  const f = s.filter || {};
+
+  $("f-name").value = s.name || "";
+  $("f-keyword").value = s.keyword || p.keyword || "";
+  $("f-url").value = s.url || "";
+  $("f-pfrom").value = p.PRICE_FROM || "";
+  $("f-pto").value = p.PRICE_TO || "";
+  $("f-rows").value = s.rows || 30;
+  $("f-private").checked = p.ISPRIVATE === "1";
+  $("f-enabled").checked = s.enabled !== false;
+
+  $("f-req").value = joinW(f.require_words);
+  $("f-blocktitle").value = joinW(f.block_title_words);
+  $("f-blockmain").value = joinW(f.block_words);
+  $("f-blocktext").value = joinW(f.block_text_words);
+
+  const rc = f.reach || {};
+  $("f-reach").value = rc.mode || "off";
+  $("f-km").value = rc.km != null ? rc.km : 30;
+  $("f-lat").value = rc.lat != null ? rc.lat : "";
+  $("f-lon").value = rc.lon != null ? rc.lon : "";
+  $("f-addr").value = rc.address || "";
+  paintReach();
+
+
+
+  ed.querySelectorAll(".help").forEach(el => {
+    el.innerHTML = esc(HELP[el.dataset.help] || "").replace(/—/g, "<em>—</em>");
+  });
+  ed.querySelectorAll(".q").forEach(btn => {
+    btn.setAttribute("aria-expanded", "false");
+    btn.onclick = () => {
+      const box = ed.querySelector('.help[data-help="' + btn.dataset.h + '"]');
+      const on = box.classList.toggle("on");
+      btn.setAttribute("aria-expanded", on ? "true" : "false");
+    };
+  });
+
+  paintChips(ed);
+  // Bei jedem Tastendruck sofort in CFG übernehmen, damit nichts nur im
+  // DOM hängt und beim nächsten Neuaufbau verloren ginge.
+  const touch = () => { DIRTY = true; paintChips(ed); collect(); markDirty(); };
+  ed.querySelectorAll("input,textarea,select").forEach(el => {
+    el.addEventListener("input", touch);
+    el.addEventListener("change", touch);
+  });
+  $("f-reach").addEventListener("change", paintReach);
+  $("btnAddr").onclick = () => lookupAddress(ed);
+  $("f-addr").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); lookupAddress(ed); }
+  });
+  $("btnGeo").onclick = () => {
+    const msg = $("geoMsg");
+    if (!navigator.geolocation) { msg.textContent = "Browser kann das nicht."; return; }
+    msg.textContent = "ermittle …";
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        // Vier Nachkommastellen sind rund 11 m - für einen Umkreis in
+        // Kilometern mehr als genug.
+        const lat = Number(pos.coords.latitude.toFixed(4));
+        const lon = Number(pos.coords.longitude.toFixed(4));
+        $("f-lat").value = lat;
+        $("f-lon").value = lon;
+        $("geoHits").innerHTML = "";
+        try {
+          const d = await api("/api/reverse", "POST", { lat: lat, lon: lon });
+          if (d.address) $("f-addr").value = d.address;
+        } catch (e) { /* Koordinaten genügen, Adresse ist nur Anzeige */ }
+        DIRTY = true; collect(); markDirty(); paintReach();
+      },
+      (e) => { msg.textContent = "nicht ermittelbar: " + e.message; });
+  };
+  $("btnPreview").onclick = preview;
+  $("btnReset").onclick = resetState;
+  $("btnDel").onclick = () => {
+    if (!confirm("Suche „" + s.name + "“ löschen?")) return;
+    CFG.searches.splice(SEL, 1);
+    SEL = Math.min(SEL, CFG.searches.length - 1);
+    DIRTY = true; renderAll(); markDirty();
+  };
+}
+
+// Die Umkreisfelder nur zeigen, wenn der gewählte Modus sie braucht.
+function paintReach() {
+  const mode = $("f-reach").value;
+  const needsGeo = mode === "radius" || mode === "paylivery_or_radius";
+  $("reachGeo").hidden = !needsGeo;
+  const msg = $("geoMsg");
+  if (!msg) return;
+  if (needsGeo && !$("f-lat").value)
+    msg.textContent = "Noch kein Bezugspunkt - der Umkreis greift erst danach.";
+  else if (needsGeo)
+    msg.textContent = "Bezugspunkt gesetzt (" + $("f-lat").value + ", " + $("f-lon").value + ")";
+}
+
+// Adresse in Koordinaten auflösen. Mehrdeutige Eingaben ("Linz") liefern
+// mehrere Treffer - die Auswahl trifft der Mensch, nicht wir.
+async function lookupAddress(ed) {
+  const q = $("f-addr").value.trim();
+  const msg = $("geoMsg"), hits = $("geoHits");
+  hits.innerHTML = "";
+  if (!q) { msg.textContent = "Bitte Adresse eintippen."; return; }
+  msg.textContent = "suche …";
+  try {
+    const d = await api("/api/geocode", "POST", { q: q });
+    if (!d.results.length) { msg.textContent = "nichts gefunden"; return; }
+    msg.textContent = d.results.length === 1 ? "" : "bitte auswählen:";
+    d.results.forEach((r, i) => {
+      const li = document.createElement("li");
+      li.innerHTML = '<span class="nm">' + esc(r.label.split(",").slice(0, 4).join(", ")) +
+                     '<span class="sub">' + r.lat + ", " + r.lon + '</span></span>';
+      li.onclick = () => {
+        $("f-lat").value = r.lat;
+        $("f-lon").value = r.lon;
+        hits.innerHTML = "";
+        DIRTY = true; collect(); markDirty(); paintReach();
+      };
+      hits.appendChild(li);
+      if (d.results.length === 1) li.onclick();
+    });
+  } catch (e) {
+    msg.textContent = "Adresssuche fehlgeschlagen: " + e.message;
+  }
+}
+
+function collect() {
+  if (SEL < 0) return;
+  const s = CFG.searches[SEL];
+  const num = (id) => $(id).value === "" ? null : Number($(id).value);
+  // Leere Eingabe muss den Schlüssel entfernen, sonst lässt sich eine
+  // Wortliste nie wieder leeren.
+  const put = (o, k, v) => { if (v && v.length) o[k] = v; else delete o[k]; };
+  const setNum = (o, k, v) => { if (v !== null) o[k] = v; else delete o[k]; };
+
+  s.name = $("f-name").value.trim() || "unbenannt";
+  s.enabled = $("f-enabled").checked;
+  s.rows = Number($("f-rows").value) || 30;
+
+  const url = $("f-url").value.trim();
+  if (url) { s.url = url; } else { delete s.url; }
+  s.path = s.path || "kaufen-und-verkaufen/marktplatz";
+
+  // Parameter ohne eigenes Feld unverändert übernehmen, damit die
+  // Oberfläche nichts wegwirft, was sie nicht anzeigt.
+  const p = {};
+  for (const k of Object.keys(s.params || {}))
+    if (KNOWN_PARAMS.indexOf(k) < 0) p[k] = s.params[k];
+
+  if ($("f-keyword").value.trim()) p.keyword = $("f-keyword").value.trim();
+  if ($("f-pfrom").value) p.PRICE_FROM = String($("f-pfrom").value);
+  if ($("f-pto").value) p.PRICE_TO = String($("f-pto").value);
+  if ($("f-private").checked) p.ISPRIVATE = "1";
+  s.params = p;
+  delete s.keyword;
+
+  // Bestehende Filter behalten und nur die sichtbaren Felder überschreiben:
+  // die Muster aus der Konfigurationsdatei haben hier kein Eingabefeld.
+  const f = Object.assign({}, s.filter || {});
+  put(f, "require_words", words($("f-req").value));
+  put(f, "block_title_words", words($("f-blocktitle").value));
+  put(f, "block_words", words($("f-blockmain").value));
+  put(f, "block_text_words", words($("f-blocktext").value));
+
+  // Preis und Anbieter wirken doppelt: als Filter bei willhaben und als
+  // Nachprüfung im Agenten, falls willhaben etwas durchrutschen lässt.
+  setNum(f, "price_min", num("f-pfrom"));
+  setNum(f, "price_max", num("f-pto"));
+  if ($("f-private").checked) f.private_only = true; else delete f.private_only;
+
+  const mode = $("f-reach").value;
+  if (mode === "off") {
+    delete f.reach;
+  } else {
+    f.reach = { mode: mode, km: Number($("f-km").value) || 30 };
+    if ($("f-lat").value !== "") f.reach.lat = Number($("f-lat").value);
+    if ($("f-lon").value !== "") f.reach.lon = Number($("f-lon").value);
+    if ($("f-addr").value.trim()) f.reach.address = $("f-addr").value.trim();
+  }
+  s.filter = f;
+
+  renderList();
+}
+
+// ------------------------------------------------------------ aktionen
+
+function note(cls, txt) {
+  const m = $("msg");
+  if (m) m.innerHTML = '<div class="msg ' + cls + '">' + esc(txt) + '</div>';
+}
+
+async function preview() {
+  collect();
+  const btn = $("btnPreview");
+  btn.disabled = true; btn.textContent = "lädt …";
+  $("res").innerHTML = "";
+  try {
+    const d = await api("/api/preview", "POST", { search: CFG.searches[SEL] });
+    note("ok", d.passed + " von " + d.checked + " geprüften Inseraten kommen durch. " +
+                "Bei willhaben insgesamt: " + d.total_on_willhaben + ".");
+    renderResults(d.results);
+  } catch (e) {
+    note("err", "Vorschau fehlgeschlagen: " + e.message);
+  }
+  btn.disabled = false; btn.textContent = "Vorschau";
+}
+
+function renderResults(rows) {
+  if (!rows.length) { $("res").innerHTML = '<div class="empty">Keine Inserate.</div>'; return; }
+  let h = '<table><thead><tr><th></th><th></th><th>Inserat</th>' +
+          '<th class="num">Preis</th><th>Ort</th><th>Bewertung</th></tr></thead><tbody>';
+  for (const r of rows) {
+    h += '<tr class="' + (r.ok ? "pass" : "fail") + '">' +
+      '<td>' + (r.ok ? '<span class="tag y">durch</span>'
+                     : '<span class="tag n">raus</span>') + '</td>' +
+      '<td>' + (r.image ? '<img class="thumb" loading="lazy" src="' + esc(r.image) + '">' : '') + '</td>' +
+      '<td><a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.title) + '</a>' +
+        '<div class="hint">' + esc((r.published || "").replace("T", " ").replace("Z", "")) +
+        ' · ' + (r.private ? "privat" : "gewerblich") +
+        (r.paylivery ? ' · <b>PayLivery</b>' : '') + '</div></td>' +
+      '<td class="num">' + esc(r.price_display) + '</td>' +
+      '<td>' + esc(r.postcode + " " + r.location) +
+        (r.km != null ? '<div class="hint">' + r.km + ' km</div>' : '') + '</td>' +
+      '<td>' + esc(r.reason || "alle Filter passen") + '</td></tr>';
+  }
+  $("res").innerHTML = h + "</tbody></table>";
+}
+
+async function resetState() {
+  const s = CFG.searches[SEL];
+  if (!confirm("Zustand von „" + s.name + "“ verwerfen? Der nächste Lauf " +
+               "markiert den aktuellen Bestand stumm neu.")) return;
+  try {
+    await api("/api/reset", "POST", { name: s.name });
+    note("ok", "Zustand verworfen.");
+    load();
+  } catch (e) { note("err", e.message); }
+}
+
+async function save() {
+  collect();
+  const b = $("btnSave");
+  b.disabled = true;
+  try {
+    await api("/api/config", "PUT", {
+      searches: CFG.searches,
+      poll_interval: Number($("interval").value) || 60
+    });
+    DIRTY = false; markDirty();
+    note("ok", "Gespeichert. Der nächste Durchlauf startet sofort.");
+    setTimeout(load, 400);
+  } catch (e) {
+    note("err", "Nicht gespeichert: " + e.message);
+    alert("Nicht gespeichert: " + e.message);
+  }
+  b.disabled = false;
+}
+
+// ------------------------------------------------------------ laden
+
+function renderAll(st) { renderList(st || window._st); renderEditor(); }
+
+function markDirty() {
+  const el = $("dirty");
+  if (el) el.textContent = DIRTY ? "ungespeicherte Änderungen" : "";
+}
+
+function paintStatus(d) {
+  const s = d.status;
+  const bad = !d.telegram_ready || s.last_error;
+  $("hdrStatus").innerHTML =
+    '<span class="dot' + (bad ? " bad" : "") + '"></span>' +
+    (d.telegram_ready ? "Telegram bereit" : "Telegram nicht konfiguriert") +
+    ' · letzter Lauf <b>' + esc((s.last_poll || "—").replace("T", " ").slice(0, 19)) + '</b>' +
+    ' · gesendet <b>' + s.sent_total + '</b>' +
+    (s.last_error ? ' · <b style="color:var(--no)">' + esc(s.last_error) + '</b>' : "");
+}
+
+// Voller Neuaufbau: nur nach einer bewussten Aktion (Start, Speichern,
+// Zustand verwerfen). Ersetzt die Konfiguration durch die vom Server.
+async function load() {
+  try {
+    const d = await api("/api/state");
+    window._st = d;
+    CFG = d.config;
+    CFG.searches = CFG.searches || [];
+    $("interval").value = d.status.interval || CFG.poll_interval || 60;
+    if (SEL < 0 && CFG.searches.length) SEL = 0;
+    if (SEL >= CFG.searches.length) SEL = CFG.searches.length - 1;
+    DIRTY = false;
+    paintStatus(d);
+    renderAll(d);
+    markDirty();
+  } catch (e) {
+    $("hdrStatus").innerHTML = '<span class="dot bad"></span>Server nicht erreichbar';
+  }
+}
+
+// Hintergrundabfrage: rührt weder Editor noch Konfiguration an.
+async function refresh() {
+  try {
+    const d = await api("/api/state");
+    window._st = d;
+    paintStatus(d);
+    renderList(d);
+  } catch (e) {
+    $("hdrStatus").innerHTML = '<span class="dot bad"></span>Server nicht erreichbar';
+  }
+}
+
+$("btnAdd").onclick = () => {
+  CFG.searches.push(blank("suche-" + (CFG.searches.length + 1)));
+  SEL = CFG.searches.length - 1;
+  DIRTY = true; renderAll(); markDirty();
+};
+$("btnAddUrl").onclick = () => {
+  const u = prompt("willhaben-Such-URL aus dem Browser einfügen:");
+  if (!u) return;
+  const s = blank("suche-" + (CFG.searches.length + 1));
+  s.url = u.trim();
+  CFG.searches.push(s);
+  SEL = CFG.searches.length - 1;
+  DIRTY = true; renderAll(); markDirty();
+};
+$("btnSave").onclick = save;
+$("btnTest").onclick = async () => {
+  try { await api("/api/test-telegram", "POST", {}); alert("Testnachricht verschickt."); }
+  catch (e) { alert("Fehlgeschlagen: " + e.message); }
+};
+
+load();
+setInterval(refresh, 20000);
+</script>
+</body>
+</html>

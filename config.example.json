@@ -1,0 +1,22 @@
+{
+  "poll_interval": 60,
+  "searches": [
+    {
+      "name": "beispiel",
+      "enabled": false,
+      "path": "kaufen-und-verkaufen/marktplatz",
+      "rows": 30,
+      "params": {
+        "keyword": "",
+        "ISPRIVATE": "1"
+      },
+      "filter": {
+        "private_only": true,
+        "require_words": [],
+        "block_title_words": [],
+        "block_words": [],
+        "block_text_words": []
+      }
+    }
+  ]
+}

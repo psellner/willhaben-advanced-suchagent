@@ -329,7 +329,17 @@ def fetch_ad_detail(build_id, seo):
 # Konsole, nicht die Spiele. Ohne diese Trenner gilt der ganze Titel als
 # Hauptartikel und ein Zubehör-Ausschluss verwirft das Inserat.
 HEAD_SPLIT = re.compile(
-    r"\s*(?:[+|&,/]|\b(?:inkl|inklusive|incl|mit|und|samt|sowie|dazu|plus)\b|\s-\s)", re.I)
+    r"\s*(?:[+|&,/]|\b(?:inkl|inklusive|incl|mit|und|samt|sowie|dazu|plus)\b)", re.I)
+
+# Der Gedankenstrich ist zweideutig. Mal hängt er Zubehör an
+# ("PS5 Konsole - 2 Controller"), mal beschreibt er das Produkt selbst
+# ("PS 5 GTA VI Limited Edition - DualSense Wireless Controller"). Er trennt
+# deshalb nur, wenn dahinter eine Menge steht oder die Aufzählung weitergeht.
+# Im Zweifel trennt er nicht - lieber ein Zubehör-Inserat zu viel im Chat als
+# eine Konsole zu wenig.
+DASH = re.compile(r"\s-\s")
+DASH_LIST = re.compile(
+    r"^\s*\d|[+&]|\b(?:inkl|inklusive|incl|mit|und|samt|sowie|dazu|plus)\b", re.I)
 
 
 def title_head(title):
@@ -339,6 +349,9 @@ def title_head(title):
     ("PS5 Slim Digital + 2 DualSense Controller + Ladestation").
     """
     head = HEAD_SPLIT.split(title, 1)[0].strip()
+    strich = DASH.search(title)
+    if strich and strich.start() < len(head) and DASH_LIST.search(title[strich.end():]):
+        head = title[:strich.start()].strip()
     # Zu kurz geraten (z.B. Titel beginnt mit Trenner) - dann lieber ganzer Titel.
     return head if len(head) >= 4 else title
 

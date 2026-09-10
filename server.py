@@ -19,6 +19,7 @@ Endpunkte:
 """
 
 import base64
+import hmac
 import json
 import os
 import urllib.parse
@@ -161,12 +162,50 @@ class Handler(BaseHTTPRequestHandler):
     # -------------------------------------------------- helpers
 
     def authorized(self):
+        """HTTP-Basic-Auth prüfen. Ohne UI_PASSWORD ist die Oberfläche offen.
+
+        Der Header wird entschlüsselt und Benutzer und Passwort werden
+        einzeln verglichen, statt die fertige base64-Zeichenkette gegen eine
+        selbst gebaute zu halten: Clients schreiben das Schema
+        unterschiedlich groß und setzen die base64-Füllzeichen nicht immer
+        gleich. Ist UI_USER leer, ist der Benutzername beliebig - sonst hängt
+        der Zugang daran, im Anmeldefenster genau nichts einzutippen, und das
+        ist am Handy kaum zu treffen.
+        """
         if not UI_PASSWORD:
             return True
-        want = base64.b64encode(
-            ("%s:%s" % (UI_USER, UI_PASSWORD)).encode()).decode()
         got = self.headers.get("Authorization", "")
-        return got == "Basic " + want
+        scheme, _, payload = got.partition(" ")
+        if scheme.lower() != "basic":
+            if got:
+                self.auth_note = "unbekanntes Auth-Verfahren %r" % scheme
+            else:
+                self.auth_note = "kein Basic-Auth-Header"
+            return False
+        raw = payload.strip()
+        raw += "=" * (-len(raw) % 4)    # fehlende Füllzeichen ergänzen
+        try:
+            decoded = base64.b64decode(raw.encode("ascii"))
+        except ValueError as e:
+            self.auth_note = "Auth-Header nicht lesbar (%s)" % e
+            return False
+        try:
+            creds = decoded.decode("utf-8")
+        except UnicodeDecodeError:
+            # Ältere Browser schicken Umlaute im Passwort als Latin-1.
+            creds = decoded.decode("latin-1")
+        user, _, pwd = creds.partition(":")
+        # Vergleich auf Bytes: compare_digest verweigert Zeichenketten mit
+        # Umlauten, und ein Passwort mit Umlaut ist nichts Verbotenes.
+        if UI_USER and not hmac.compare_digest(user.encode("utf-8"),
+                                               UI_USER.encode("utf-8")):
+            self.auth_note = "Benutzername %r passt nicht zu UI_USER" % user
+            return False
+        if not hmac.compare_digest(pwd.encode("utf-8"),
+                                   UI_PASSWORD.encode("utf-8")):
+            self.auth_note = "falsches Passwort"
+            return False
+        return True
 
     def send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -199,8 +238,20 @@ class Handler(BaseHTTPRequestHandler):
     def guard(self):
         if self.authorized():
             return True
+        # Grund einmal ins Log, sonst sieht man von außen nur ein stummes
+        # Anmeldefenster und weiß nicht, ob Benutzer, Passwort oder ein
+        # Reverse-Proxy davor das Problem ist. Das erste 401 ohne Header ist
+        # der normale Ablauf und daher nicht meldenswert.
+        note = getattr(self, "auth_note", "")
+        if note and note != "kein Basic-Auth-Header":
+            agent.log("Anmeldung abgewiesen: %s" % note)
+        # Body verwerfen, damit die Verbindung sauber endet.
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(n)
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="willhaben-agent"')
+        self.send_header("Content-Length", "0")
         self.end_headers()
         return False
 
@@ -380,8 +431,12 @@ def main():
     seed_config()
     threading.Thread(target=poller, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    agent.log("Oberfläche auf http://0.0.0.0:%d%s"
-              % (PORT, " (passwortgeschützt)" if UI_PASSWORD else ""))
+    if UI_PASSWORD:
+        agent.log("Oberfläche auf http://0.0.0.0:%d (Passwortschutz aktiv, "
+                  "Benutzer: %s)" % (PORT, UI_USER or "beliebig"))
+    else:
+        agent.log("Oberfläche auf http://0.0.0.0:%d (ohne Passwort - "
+                  "UI_PASSWORD ist nicht gesetzt)" % PORT)
     srv.serve_forever()
 
 

@@ -270,8 +270,18 @@ Inserate liefert (`rows`, Standard 30):
    Statuszeile.
 
 Die Oberfläche ist standardmäßig ungeschützt. Für den Betrieb auf der NAS
-`UI_USER` und `UI_PASSWORD` in der `.env` setzen, dann verlangt der Server
-HTTP-Basic-Auth.
+`UI_PASSWORD` in der `.env` setzen, dann verlangt der Server HTTP-Basic-Auth.
+Der Schutz hängt allein an diesem Wert: ist er leer, ist die Oberfläche offen.
+`UI_USER` ist optional und darf leer bleiben — dann ist der Benutzername im
+Anmeldefenster beliebig, nur das Passwort zählt.
+
+Beim Start schreibt der Server in das Log, ob der Schutz greift und welcher
+Benutzername erwartet wird. Eine abgewiesene Anmeldung landet mit Grund im
+Log (falsches Passwort, unpassender Benutzername), damit ein stummes
+Anmeldefenster nicht im Dunkeln lässt. Kommt gar nichts an, während das
+Passwort gesetzt ist, sitzt meist ein Reverse-Proxy davor, der den
+`Authorization`-Header entfernt. `/healthz` bleibt absichtlich offen, damit
+der Healthcheck des Containers auch mit Passwort funktioniert.
 
 ### Datenverzeichnis
 

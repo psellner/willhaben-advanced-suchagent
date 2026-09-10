@@ -162,6 +162,8 @@
            style="width:55px;display:inline-block;padding:3px 6px"> Min</span>
   <button id="btnTest">Telegram testen</button>
   <button class="primary" id="btnSave">Speichern</button>
+  <a href="/logout" onclick="fetch('/logout',{method:'POST'}).then(()=>location.href='/login');return false;"
+     class="stat" style="text-decoration:none">Abmelden</a>
 </header>
 
 <main>

@@ -9,6 +9,8 @@ Neustart.
 Endpunkte:
     GET    /                     Oberfläche
     GET    /healthz              Healthcheck, ohne Passwortschutz
+    GET    /login, POST /login   Anmeldeformular
+    POST   /logout               Sitzung beenden
     GET    /api/state            Konfiguration + Laufzeitstatus
     POST   /api/geocode          Adresse zu Koordinaten (OpenStreetMap)
     POST   /api/reverse          Koordinaten zu Adresse
@@ -19,16 +21,17 @@ Endpunkte:
     POST   /api/test-telegram    Testnachricht verschicken
 """
 
-import base64
 import hmac
 import json
 import os
+import secrets
 import urllib.error
 import urllib.parse
 import threading
 import time
 import traceback
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import agent
@@ -37,6 +40,34 @@ PORT = int(os.environ.get("PORT", "8088"))
 UI_USER = os.environ.get("UI_USER", "")
 UI_PASSWORD = os.environ.get("UI_PASSWORD", "")
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+
+SESSION_COOKIE = "wh_session"
+SESSION_TTL = 30 * 24 * 3600
+SESSIONS = {}
+SESSIONS_LOCK = threading.Lock()
+
+
+def new_session():
+    token = secrets.token_urlsafe(32)
+    with SESSIONS_LOCK:
+        SESSIONS[token] = time.time() + SESSION_TTL
+    return token
+
+
+def valid_session(token):
+    with SESSIONS_LOCK:
+        exp = SESSIONS.get(token)
+        if exp is None:
+            return False
+        if exp < time.time():
+            del SESSIONS[token]
+            return False
+        return True
+
+
+def drop_session(token):
+    with SESSIONS_LOCK:
+        SESSIONS.pop(token, None)
 
 STATUS = {
     "started": None,
@@ -163,51 +194,39 @@ class Handler(BaseHTTPRequestHandler):
 
     # -------------------------------------------------- helpers
 
-    def authorized(self):
-        """HTTP-Basic-Auth prüfen. Ohne UI_PASSWORD ist die Oberfläche offen.
+    def session_token(self):
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        cookie = SimpleCookie()
+        cookie.load(raw)
+        morsel = cookie.get(SESSION_COOKIE)
+        return morsel.value if morsel else None
 
-        Der Header wird entschlüsselt und Benutzer und Passwort werden
-        einzeln verglichen, statt die fertige base64-Zeichenkette gegen eine
-        selbst gebaute zu halten: Clients schreiben das Schema
-        unterschiedlich groß und setzen die base64-Füllzeichen nicht immer
-        gleich. Ist UI_USER leer, ist der Benutzername beliebig - sonst hängt
-        der Zugang daran, im Anmeldefenster genau nichts einzutippen, und das
-        ist am Handy kaum zu treffen.
-        """
+    def authorized(self):
         if not UI_PASSWORD:
             return True
-        got = self.headers.get("Authorization", "")
-        scheme, _, payload = got.partition(" ")
-        if scheme.lower() != "basic":
-            if got:
-                self.auth_note = "unbekanntes Auth-Verfahren %r" % scheme
-            else:
-                self.auth_note = "kein Basic-Auth-Header"
-            return False
-        raw = payload.strip()
-        raw += "=" * (-len(raw) % 4)    # fehlende Füllzeichen ergänzen
-        try:
-            decoded = base64.b64decode(raw.encode("ascii"))
-        except ValueError as e:
-            self.auth_note = "Auth-Header nicht lesbar (%s)" % e
-            return False
-        try:
-            creds = decoded.decode("utf-8")
-        except UnicodeDecodeError:
-            # Ältere Browser schicken Umlaute im Passwort als Latin-1.
-            creds = decoded.decode("latin-1")
-        user, _, pwd = creds.partition(":")
-        # Vergleich auf Bytes: compare_digest verweigert Zeichenketten mit
-        # Umlauten, und ein Passwort mit Umlaut ist nichts Verbotenes.
-        if UI_USER and not hmac.compare_digest(user.encode("utf-8"),
-                                               UI_USER.encode("utf-8")):
-            self.auth_note = "Benutzername %r passt nicht zu UI_USER" % user
-            return False
-        if not hmac.compare_digest(pwd.encode("utf-8"),
-                                   UI_PASSWORD.encode("utf-8")):
-            self.auth_note = "falsches Passwort"
-            return False
-        return True
+        token = self.session_token()
+        return bool(token) and valid_session(token)
+
+    def set_session_cookie(self, token):
+        self.send_header(
+            "Set-Cookie",
+            "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d"
+            % (SESSION_COOKIE, token, SESSION_TTL))
+
+    def clear_session_cookie(self):
+        self.send_header(
+            "Set-Cookie", "%s=; Path=/; HttpOnly; Max-Age=0" % SESSION_COOKIE)
+
+    def send_redirect(self, location, cookie_token=None, clear_cookie=False):
+        self.send_response(302)
+        self.send_header("Location", location)
+        if cookie_token:
+            self.set_session_cookie(cookie_token)
+        if clear_cookie:
+            self.clear_session_cookie()
+        self.end_headers()
 
     def send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -238,24 +257,38 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n).decode("utf-8"))
 
     def guard(self):
+        # API-Aufrufe laufen über fetch() im Browser, nicht über eine
+        # Adresszeile - ein Redirect wäre hier nutzlos, also nur JSON 401.
         if self.authorized():
             return True
-        # Grund einmal ins Log, sonst sieht man von außen nur ein stummes
-        # Anmeldefenster und weiß nicht, ob Benutzer, Passwort oder ein
-        # Reverse-Proxy davor das Problem ist. Das erste 401 ohne Header ist
-        # der normale Ablauf und daher nicht meldenswert.
-        note = getattr(self, "auth_note", "")
-        if note and note != "kein Basic-Auth-Header":
-            agent.log("Anmeldung abgewiesen: %s" % note)
         # Body verwerfen, damit die Verbindung sauber endet.
         n = int(self.headers.get("Content-Length") or 0)
         if n:
             self.rfile.read(n)
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="willhaben-agent"')
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        self.send_json({"error": "nicht angemeldet"}, 401)
         return False
+
+    def handle_login(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n).decode("utf-8") if n else ""
+        fields = urllib.parse.parse_qs(raw)
+        user = (fields.get("user") or [""])[0]
+        pw = (fields.get("pass") or [""])[0]
+        # Ist UI_USER leer, ist der Benutzername beliebig - sonst hängt der
+        # Zugang daran, im Formular genau nichts einzutippen.
+        ok = (not UI_USER or user == UI_USER) and hmac.compare_digest(
+            pw.encode("utf-8"), UI_PASSWORD.encode("utf-8"))
+        if not ok:
+            agent.log("Anmeldung abgewiesen: Benutzer %r" % user)
+            time.sleep(1)      # Bremse gegen automatisches Durchprobieren
+            return self.send_redirect("/login?error=1")
+        self.send_redirect("/", cookie_token=new_session())
+
+    def handle_logout(self):
+        token = self.session_token()
+        if token:
+            drop_session(token)
+        self.send_redirect("/login", clear_cookie=True)
 
     # -------------------------------------------------- routes
 
@@ -267,12 +300,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/healthz":
             return self.send_json({"ok": True, "last_poll": STATUS["last_poll"]})
 
-        if not self.guard():
-            return
+        if path == "/login":
+            return self.send_file(os.path.join(WEB_DIR, "login.html"),
+                                  "text/html; charset=utf-8")
 
         if path in ("/", "/index.html"):
+            if not self.authorized():
+                return self.send_redirect("/login")
             return self.send_file(os.path.join(WEB_DIR, "index.html"),
                                   "text/html; charset=utf-8")
+
+        if not self.guard():
+            return
 
         if path == "/api/state":
             cfg = agent.load_config()
@@ -293,9 +332,15 @@ class Handler(BaseHTTPRequestHandler):
         self.do_POST()
 
     def do_POST(self):
+        path = self.path.split("?")[0]
+
+        if path == "/login":
+            return self.handle_login()
+        if path == "/logout":
+            return self.handle_logout()
+
         if not self.guard():
             return
-        path = self.path.split("?")[0]
         try:
             data = self.read_json()
         except ValueError as e:

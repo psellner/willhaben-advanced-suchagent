@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anmeldung - willhaben-Suchagenten</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --panel:#fff; --line:#e2e5ea; --ink:#1a1d21; --dim:#6b7280;
+    --accent:#0b6ea8; --no:#9a3412; --nobg:#fdf1ea; --radius:10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#14171a; --panel:#1c2024; --line:#2e343a; --ink:#e6e8ea; --dim:#9aa3ad;
+      --accent:#4aa3d8; --no:#f0a882; --nobg:#2a1d17;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:var(--bg); color:var(--ink);
+         font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  form { width:280px; background:var(--panel); border:1px solid var(--line);
+         border-radius:var(--radius); padding:24px; }
+  h1 { font-size:16px; margin:0 0 18px; font-weight:650; }
+  label { display:block; font-size:12.5px; color:var(--dim); margin:14px 0 4px; }
+  input { width:100%; padding:8px 9px; border:1px solid var(--line); border-radius:7px;
+          background:var(--bg); color:var(--ink); font:inherit; font-size:13px; }
+  input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  button { width:100%; margin-top:18px; font:inherit; font-size:13px; padding:9px 13px;
+           border-radius:7px; border:1px solid var(--accent); background:var(--accent);
+           color:#fff; cursor:pointer; }
+  button:hover { opacity:.92; }
+  .err { margin-top:14px; padding:9px 11px; border-radius:7px; background:var(--nobg);
+         color:var(--no); font-size:12.5px; }
+</style>
+</head>
+<body>
+<form method="post" action="/login">
+  <h1>willhaben-Suchagenten</h1>
+  <label for="user"><b>Benutzer</b></label>
+  <input type="text" id="user" name="user" autocomplete="username" autofocus required>
+  <label for="pass"><b>Passwort</b></label>
+  <input type="password" id="pass" name="pass" autocomplete="current-password" required>
+  <button type="submit">Anmelden</button>
+  <div class="err" id="err" hidden>Benutzer oder Passwort falsch.</div>
+</form>
+<script>
+  if (new URLSearchParams(location.search).get("error")) {
+    document.getElementById("err").hidden = false;
+  }
+</script>
+</body>
+</html>

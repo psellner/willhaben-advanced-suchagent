@@ -690,7 +690,8 @@ def evaluate(search, limit=None):
         km = distance_km(ad, reach)
         row["km"] = round(km, 1) if km is not None else None
         row.pop("coords", None)     # Rohkoordinaten muss die Oberfläche nicht sehen
-        row.pop("published_ts", None)
+        # published_ts bleibt drin: die Vorschau sortiert danach nach Datum.
+        # Die Anzeigeform published taugt dafür nicht, sie ist reiner Text.
         out.append(row)
     return out, total, sources
 

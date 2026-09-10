@@ -130,6 +130,9 @@
   .resbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
             margin:14px 0 4px; font-size:12.5px; color:var(--dim); }
   .resbar .check { margin-top:0; }
+  .resbar select { width:auto; padding:4px 7px; font-size:12.5px; }
+  .resbar label.sort { display:flex; align-items:center; gap:6px; }
+  .resbar .spacer { flex:1; }
   .card { border:1px solid var(--line); border-radius:var(--radius);
           padding:12px 14px; margin-top:12px; }
   .card.y { border-color:var(--ok); background:var(--okbg); }
@@ -612,6 +615,40 @@ function note(cls, txt) {
 // statt willhaben ein zweites Mal zu fragen.
 let ROWS = [];
 let ONLY_PASS = false;
+let SORT = "date_desc";
+
+// Sortierschlüssel je Inserat. Fehlende Werte - "Preis auf Anfrage" (Preis 0)
+// und unbekannte Entfernung - haben keine sinnvolle Stelle in der Reihenfolge
+// und wandern deshalb in beiden Richtungen ans Ende.
+const SORTS = {
+  date_desc:  { key: (r) => r.published_ts || 0, dir: -1 },
+  date_asc:   { key: (r) => r.published_ts || 0, dir:  1 },
+  price_asc:  { key: (r) => (r.price > 0 ? r.price : null), dir:  1 },
+  price_desc: { key: (r) => (r.price > 0 ? r.price : null), dir: -1 },
+  km_asc:     { key: (r) => r.km, dir:  1 },
+  km_desc:    { key: (r) => r.km, dir: -1 },
+};
+
+const SORT_LABELS = [
+  ["date_desc",  "Datum: neueste zuerst"],
+  ["date_asc",   "Datum: älteste zuerst"],
+  ["price_asc",  "Preis: günstigste zuerst"],
+  ["price_desc", "Preis: teuerste zuerst"],
+  ["km_asc",     "Entfernung: nächste zuerst"],
+  ["km_desc",    "Entfernung: weiteste zuerst"],
+];
+
+// Sortiert eine Kopie, damit ROWS die vom Server gelieferte Reihenfolge behält.
+function sortRows(rows) {
+  const s = SORTS[SORT] || SORTS.date_desc;
+  return rows.slice().sort((a, b) => {
+    const x = s.key(a), y = s.key(b);
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return x === y ? 0 : (x < y ? -1 : 1) * s.dir;
+  });
+}
 
 async function preview() {
   collect();
@@ -655,15 +692,28 @@ function sourcesTable(sources) {
 function drawRows() {
   const box = $("resRows");
   if (!box) return;
+  // Die Leiste wird komplett neu gezeichnet, das Bedienelement darunter ist
+  // danach ein anderes. Ohne das hier verlöre die Tastatur nach der ersten
+  // Auswahl den Fokus und der nächste Tastendruck ginge ins Leere.
+  const focused = document.activeElement ? document.activeElement.id : "";
   const passed = ROWS.filter((r) => r.ok);
   const shown = ONLY_PASS ? passed : ROWS;
+  const opts = SORT_LABELS.map(([v, t]) =>
+    '<option value="' + v + '"' + (SORT === v ? " selected" : "") + ">" + t + "</option>").join("");
   box.innerHTML =
     '<div class="resbar"><label class="check"><input type="checkbox" id="onlyPass"' +
     (ONLY_PASS ? " checked" : "") + '> nur Treffer</label><span>' +
-    passed.length + " von " + ROWS.length + " kommen durch</span></div>" +
-    resultsTable(shown);
+    passed.length + " von " + ROWS.length + " kommen durch</span>" +
+    '<span class="spacer"></span>' +
+    '<label class="sort">sortieren nach' +
+    '<select id="sortBy">' + opts + "</select></label></div>" +
+    resultsTable(sortRows(shown));
   const cb = $("onlyPass");
   if (cb) cb.onchange = () => { ONLY_PASS = cb.checked; drawRows(); };
+  const sel = $("sortBy");
+  if (sel) sel.onchange = () => { SORT = sel.value; drawRows(); };
+  const back = $(focused);
+  if (back) back.focus();
 }
 
 // willhaben liefert reservierte Inserate ganz normal in der Suche mit. Sie

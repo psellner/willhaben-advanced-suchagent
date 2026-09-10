@@ -35,6 +35,10 @@ Der wichtigste Knopf ist **Vorschau**. Er fragt die Suche live ab und zeigt
 für jedes Inserat, ob es durchkäme, und bei Verwerfung welcher Filter
 gegriffen hat. Es wird dabei nichts verschickt und nichts als gesehen
 vermerkt. Filter lassen sich damit nachschärfen, ohne den Chat zuzumüllen.
+Die Trefferliste lässt sich nach Datum, Preis und Entfernung sortieren, in
+beide Richtungen; der Haken **nur Treffer** blendet die Verworfenen aus.
+Inserate ohne Preisangabe und solche ohne bekannte Entfernung stehen dabei
+immer am Ende.
 
 **Zustand verwerfen** setzt eine Suche zurück. Der nächste Lauf markiert den
 Bestand stumm neu, statt alles auf einmal zu melden.

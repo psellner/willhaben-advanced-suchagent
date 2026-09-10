@@ -268,17 +268,57 @@ def fetch_build_id():
 LIVE_STATUS = ("active", "reserved")
 
 
+def parse_ad_detail(detail, seo):
+    """Ein Inserat aus der Detailseite lesen.
+
+    Die Detailseite benennt fast alles anders als die Suche: der Titel steht
+    in `description`, Ort und Bundesland in `advertAddressDetails`, das Bild
+    in `advertImageList`. Nur Preis und Anbieterart heißen gleich. Deshalb
+    ein eigener Parser statt parse_ad() - der fand hier bloß den Preis und
+    ließ Titel, Ort und Link leer, was die Preisänderungsmeldung unbrauchbar
+    machte. Koordinaten liefert die Detailseite gar nicht; sie kommen aus dem
+    gemerkten Stand der Suche.
+    """
+    addr = detail.get("advertAddressDetails") or {}
+    p2pp = detail.get("p2ppOptions")
+    bilder = (detail.get("advertImageList") or {}).get("advertImage") or []
+    try:
+        price = float(attr(detail, "PRICE", "0") or 0)
+    except ValueError:
+        price = 0.0
+    status = (detail.get("advertStatus") or {}).get("id") or ""
+    return {
+        "id": str(detail.get("id") or ""),
+        "seo": seo,
+        "title": detail.get("description") or "",
+        "body": attr(detail, "DESCRIPTION"),
+        "price": price,
+        "price_display": attr(detail, "PRICE_FOR_DISPLAY") or "Preis auf Anfrage",
+        "location": addr.get("postalName") or attr(detail, "LOCATION/ADDRESS_2"),
+        "postcode": addr.get("postCode") or "",
+        "state": addr.get("province") or attr(detail, "LOCATION/ADDRESS_4"),
+        # "2026-09-01T12:00:29+0200" -> dieselbe Form wie aus der Suche.
+        "published": (detail.get("publishedDate") or "")[:19],
+        "published_ts": 0,
+        "private": attr(detail, "ISPRIVATE") == "1",
+        # None heißt "die Seite sagt nichts dazu" - dann gilt der gemerkte
+        # Stand aus der Suche. Sagt sie etwas, ist das der aktuelle Stand.
+        "paylivery": (bool(p2pp.get("deliveryOptions")) if p2pp is not None else None),
+        "coords": None,
+        "url": "https://www.willhaben.at/iad/" + seo if seo else "",
+        "image": (bilder[0].get("mainImageUrl") if bilder else "") or "",
+        "status": status,
+        "active": status in LIVE_STATUS,
+    }
+
+
 def fetch_ad_detail(build_id, seo):
     """Aktuellen Stand eines einzelnen Inserats über seine Detailseite holen."""
-    url = "https://www.willhaben.at/_next/data/%s/iad/%s.json" % (
-        build_id, seo.rstrip("/"))
+    seo = seo.rstrip("/")
+    url = "https://www.willhaben.at/_next/data/%s/iad/%s.json" % (build_id, seo)
     raw = http_get(url, headers={"Accept": "application/json", "User-Agent": UA})
     data = json.loads(raw.decode("utf-8"))
-    detail = data["pageProps"]["advertDetails"]
-    parsed = parse_ad(detail)
-    parsed["status"] = (detail.get("advertStatus") or {}).get("id") or ""
-    parsed["active"] = parsed["status"] in LIVE_STATUS
-    return parsed
+    return parse_ad_detail(data["pageProps"]["advertDetails"], seo)
 
 
 # ---------------------------------------------------------------- filter
@@ -343,7 +383,10 @@ def term_to_regex(term):
     core = SEP.join(chunk_regex(c) for c in chunks)
     pre = r"\b" if term[:1].isalnum() else ""
     if term[-1:].isalpha():
-        post = PLURAL + r"\b"
+        # Eine angehängte Ziffer beendet das Wort ebenso wie eine Wortgrenze:
+        # "vr" und "psvr" sollen auch "VR2" und "PSVR2" treffen, sonst rutscht
+        # eine VR-Brille als Konsole durch.
+        post = PLURAL + r"(?=\d|\b)"
     elif term[-1:].isalnum():
         post = r"\b"
     else:
@@ -636,6 +679,8 @@ def search_entry(state, name):
     entry.setdefault("seen", [])
     entry.setdefault("prices", {})
     entry.setdefault("seo", {})
+    # Was die Detailseite nicht hergibt und nur die Suche kennt.
+    entry.setdefault("extra", {})
     return entry
 
 
@@ -649,6 +694,7 @@ def run_search(tg, search, state, dry_run=False):
     seen = entry["seen"]
     prices = entry["prices"]
     seo_map = entry["seo"]
+    extra = entry["extra"]
     seen_set = set(seen)
     first_run = not seen_set
     if dry_run:
@@ -659,6 +705,10 @@ def run_search(tg, search, state, dry_run=False):
         prices[ad["id"]] = ad["price"]
         if ad.get("seo"):
             seo_map[ad["id"]] = ad["seo"]
+        # Koordinaten und PayLivery stehen nur in der Suchantwort. Die volle
+        # Preisprüfung braucht sie später für Entfernung und Kennzeichnung.
+        extra[ad["id"]] = {"coords": list(ad["coords"]) if ad.get("coords") else None,
+                           "paylivery": bool(ad.get("paylivery"))}
 
     ads, _, _ = fetch(search)
     if not ads:
@@ -744,6 +794,7 @@ def run_search(tg, search, state, dry_run=False):
     kept = set(entry["seen"][:MAX_TRACKED_PRICES])
     entry["prices"] = {k: v for k, v in prices.items() if k in kept}
     entry["seo"] = {k: v for k, v in seo_map.items() if k in kept}
+    entry["extra"] = {k: v for k, v in extra.items() if k in kept}
 
     if first_run:
         log("%s: Erstlauf, %d Inserate als bekannt markiert (keine Meldung)"
@@ -779,6 +830,7 @@ def recheck_prices(cfg, state, dry_run=False):
         entry = search_entry(state, name)
         prices = entry["prices"]
         seo_map = entry["seo"]
+        extra = entry["extra"]
         reach = (search.get("filter") or {}).get("reach")
 
         def forget(ad_id):
@@ -793,6 +845,7 @@ def recheck_prices(cfg, state, dry_run=False):
             """
             prices.pop(ad_id, None)
             seo_map.pop(ad_id, None)
+            extra.pop(ad_id, None)
 
         for ad_id, seo in list(seo_map.items()):
             checked += 1
@@ -810,6 +863,13 @@ def recheck_prices(cfg, state, dry_run=False):
                 continue
             finally:
                 time.sleep(0.3)    # willhaben nicht mit Einzelabfragen bombardieren
+
+            # Die Detailseite kennt weder Koordinaten noch PayLivery.
+            merk = extra.get(ad_id) or {}
+            if merk.get("coords") and not ad.get("coords"):
+                ad["coords"] = tuple(merk["coords"])
+            if ad.get("paylivery") is None:
+                ad["paylivery"] = bool(merk.get("paylivery"))
 
             if not ad["active"]:
                 dropped += 1

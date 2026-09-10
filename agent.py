@@ -276,8 +276,7 @@ def parse_ad_detail(detail, seo):
     in `advertImageList`. Nur Preis und Anbieterart heißen gleich. Deshalb
     ein eigener Parser statt parse_ad() - der fand hier bloß den Preis und
     ließ Titel, Ort und Link leer, was die Preisänderungsmeldung unbrauchbar
-    machte. Koordinaten liefert die Detailseite gar nicht; sie kommen aus dem
-    gemerkten Stand der Suche.
+    machte.
     """
     addr = detail.get("advertAddressDetails") or {}
     p2pp = detail.get("p2ppOptions")
@@ -304,12 +303,140 @@ def parse_ad_detail(detail, seo):
         # None heißt "die Seite sagt nichts dazu" - dann gilt der gemerkte
         # Stand aus der Suche. Sagt sie etwas, ist das der aktuelle Stand.
         "paylivery": (bool(p2pp.get("deliveryOptions")) if p2pp is not None else None),
-        "coords": None,
+        # Gleiches Attribut wie in der Suche, nur an anderer Stelle im JSON.
+        "coords": parse_coords(attr(detail, "COORDINATES")),
         "url": "https://www.willhaben.at/iad/" + seo if seo else "",
         "image": (bilder[0].get("mainImageUrl") if bilder else "") or "",
         "status": status,
         "active": status in LIVE_STATUS,
     }
+
+
+# Eine Inseratsadresse endet auf "-<ID>". Der Slug davor ist willhaben egal,
+# aufgelöst wird allein über die Zahl am Ende.
+AD_ID_RE = re.compile(r"-(\d+)$")
+
+
+def seo_from_url(url, fallback_path=""):
+    """Aus einer willhaben-Adresse den Detailpfad ziehen.
+
+    Verträgt alles, was beim Kopieren anfällt: mit und ohne Schema, mit
+    angehängter Suchabfrage oder Anker, mit oder ohne Schrägstrich am Ende.
+    Eine nackte Inserats-ID genügt ebenfalls; der Slug wird dann erfunden,
+    weil willhaben ihn ohnehin nicht prüft. Leerer Rückgabewert heißt: das
+    war keine Adresse eines einzelnen Inserats.
+    """
+    url = (url or "").strip()
+    if url.isdigit():
+        vertical = (fallback_path or "kaufen-und-verkaufen").split("/")[0]
+        return "%s/d/inserat-%s" % (vertical, url)
+    path = urllib.parse.urlparse(url).path.strip("/")
+    # Auch ohne Schema ("www.willhaben.at/iad/...") landet der Host im Pfad.
+    cut = path.find("iad/")
+    if cut != -1:
+        path = path[cut + 4:]
+    return path if AD_ID_RE.search(path) else ""
+
+
+def check_ad(search, url, geocode=None):
+    """Ein einzelnes Inserat gegen eine Suche prüfen.
+
+    Beantwortet zwei Fragen, die in der Praxis gern verwechselt werden:
+    kommt das Inserat durch den Filter, und liefert die Suche es überhaupt
+    an? Ein Inserat kann jeden Filter passieren und trotzdem nie im Chat
+    landen, weil keine der Schreibweisen darauf passt oder weil es aus dem
+    Abfragefenster (`rows`) herausgerutscht ist.
+
+    `geocode` ist der letzte Rückfall für die Entfernung: eine Funktion, die
+    zu einem Ortsnamen Koordinaten liefert. Woher die Entfernung stammt,
+    steht am Ende in `coords_source`.
+    """
+    seo = seo_from_url(url, search.get("path"))
+    if not seo:
+        raise ValueError("Das ist keine Adresse eines einzelnen Inserats.")
+
+    ad = fetch_ad_detail(fetch_build_id(), seo)
+    # Nur ein Teil der Detailseiten führt Koordinaten, die Suche führt sie
+    # immer. Ohne sie fällt die Entfernungsprüfung auf "unbekannt" zurück und
+    # verwirft ein Inserat, das in Wahrheit ums Eck liegt.
+    source = "Detailseite" if ad["coords"] else ""
+
+    # Je Schreibweise eine Abfrage - genau die, die auch der Durchlauf macht.
+    window = []
+    for kw in search_keywords(search):
+        row = {"keyword": kw or url_keyword(build_api_url(search)), "hit": False}
+        try:
+            ads, _, _ = fetch_one(search, kw)
+            row["fetched"] = len(ads)
+            treffer = next((a for a in ads if a["id"] == ad["id"]), None)
+            row["hit"] = treffer is not None
+            if treffer:
+                source = source or "Suchtreffer"
+                _fill_from_search(ad, treffer)
+        except Exception as e:
+            row["error"] = str(e)
+        window.append(row)
+
+    if not ad["coords"]:
+        treffer = _probe_by_title(search, ad)
+        if treffer:
+            source = "Titelsuche"
+            _fill_from_search(ad, treffer)
+
+    if not ad["coords"] and geocode:
+        # Postleitzahl statt Adresse: die Straße nennt das Inserat nicht, und
+        # für einen Radius über zig Kilometer genügt der Ortsmittelpunkt.
+        try:
+            hits = geocode("%s %s" % (ad["postcode"], ad["location"]))
+        except Exception:
+            hits = []
+        if hits:
+            ad["coords"] = (hits[0]["lat"], hits[0]["lon"])
+            source = "Postleitzahl, daher ungefähr"
+
+    ok, why = matches(ad, search.get("filter"))
+    km = distance_km(ad, (search.get("filter") or {}).get("reach"))
+
+    row = dict(ad)
+    row.pop("coords", None)
+    row.pop("published_ts", None)
+    row["ok"] = ok
+    row["reason"] = why
+    row["km"] = round(km, 1) if km is not None else None
+    return {"ad": row, "ok": ok, "reason": why, "window": window,
+            "in_window": any(w.get("hit") for w in window),
+            "coords_source": source}
+
+
+def _fill_from_search(ad, treffer):
+    """Was die Suche besser weiß als die Detailseite, nachtragen."""
+    if not ad["coords"]:
+        ad["coords"] = treffer["coords"]
+    if ad.get("paylivery") is None:
+        ad["paylivery"] = treffer["paylivery"]
+
+
+def _probe_by_title(search, ad):
+    """Das Inserat über seinen eigenen Titel suchen, nur wegen der Koordinaten.
+
+    Greift, wenn es aus dem Abfragefenster der Suche gerutscht ist. Preis-
+    und Anbieterfilter bleiben dabei weg: gesucht wird dieses eine Inserat,
+    nicht die Trefferliste.
+    """
+    titel = " ".join((ad["title"] or "").split())[:60]
+    if not titel:
+        return None
+    probe = {"path": search.get("path") or "kaufen-und-verkaufen/marktplatz",
+             "rows": 200, "params": {"keyword": titel}}
+    try:
+        ads, _, _ = fetch_one(probe, titel)
+    except Exception:
+        return None
+    return next((a for a in ads if a["id"] == ad["id"]), None)
+
+
+class AdGone(Exception):
+    """Unter dieser Adresse liegt kein Inserat mehr."""
 
 
 def fetch_ad_detail(build_id, seo):
@@ -318,7 +445,13 @@ def fetch_ad_detail(build_id, seo):
     url = "https://www.willhaben.at/_next/data/%s/iad/%s.json" % (build_id, seo)
     raw = http_get(url, headers={"Accept": "application/json", "User-Agent": UA})
     data = json.loads(raw.decode("utf-8"))
-    return parse_ad_detail(data["pageProps"]["advertDetails"], seo)
+    detail = (data.get("pageProps") or {}).get("advertDetails")
+    if not detail:
+        # Gelöschte und abgelaufene Inserate liefern kein 404, sondern eine
+        # 200-Antwort mit einer Weiterleitung auf die Kategorie. Ohne diese
+        # Prüfung endet das in einem KeyError statt in einer klaren Aussage.
+        raise AdGone(seo)
+    return parse_ad_detail(detail, seo)
 
 
 # ---------------------------------------------------------------- filter
@@ -698,7 +831,9 @@ def search_entry(state, name):
 
 
 def seen_ids(entry):
-    return entry["seen"] if isinstance(entry, dict) else entry
+    if isinstance(entry, dict):
+        return entry.get("seen", [])
+    return entry or []
 
 
 def run_search(tg, search, state, dry_run=False):
@@ -864,6 +999,12 @@ def recheck_prices(cfg, state, dry_run=False):
             checked += 1
             try:
                 ad = fetch_ad_detail(build_id, seo)
+            except AdGone:
+                dropped += 1
+                log("%s: %s gibt es nicht mehr - Preisverfolgung beendet"
+                    % (name, ad_id))
+                forget(ad_id)
+                continue
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     forget(ad_id)
@@ -877,7 +1018,7 @@ def recheck_prices(cfg, state, dry_run=False):
             finally:
                 time.sleep(0.3)    # willhaben nicht mit Einzelabfragen bombardieren
 
-            # Die Detailseite kennt weder Koordinaten noch PayLivery.
+            # Rückfall für Inserate, deren Detailseite nichts dazu sagt.
             merk = extra.get(ad_id) or {}
             if merk.get("coords") and not ad.get("coords"):
                 ad["coords"] = tuple(merk["coords"])

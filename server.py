@@ -14,6 +14,7 @@ Endpunkte:
     POST   /api/reverse          Koordinaten zu Adresse
     PUT    /api/config           gesamte Konfiguration speichern
     POST   /api/preview          Suche testen, ohne etwas zu verschicken
+    POST   /api/check-url        einzelnes Inserat gegen eine Suche prüfen
     POST   /api/reset            Zustand einer Suche verwerfen
     POST   /api/test-telegram    Testnachricht verschicken
 """
@@ -22,6 +23,7 @@ import base64
 import hmac
 import json
 import os
+import urllib.error
 import urllib.parse
 import threading
 import time
@@ -304,6 +306,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.save_config(data)
             if path == "/api/preview":
                 return self.preview(data)
+            if path == "/api/check-url":
+                return self.check_url(data)
             if path == "/api/reset":
                 return self.reset(data)
             if path == "/api/test-telegram":
@@ -391,6 +395,33 @@ class Handler(BaseHTTPRequestHandler):
             "api_url": sources[0]["url"] if sources else "",
             "results": rows,
         })
+
+    def check_url(self, data):
+        """Ein einzelnes Inserat gegen die gerade offene Suche halten.
+
+        Zusätzlich zum Filterurteil wird gemeldet, ob die Suche das Inserat
+        überhaupt noch anliefert und ob es bereits als bekannt gemerkt ist.
+        Beides entscheidet mit darüber, ob eine Meldung käme - der Filter
+        allein sagt das nicht.
+        """
+        search = data.get("search") or {}
+        try:
+            res = agent.check_ad(search, data.get("url", ""), geocode=geocode)
+        except ValueError as e:
+            return self.send_json({"error": str(e)}, 400)
+        except agent.AdGone:
+            return self.send_json(
+                {"error": "Unter dieser Adresse liegt kein Inserat mehr - "
+                          "gelöscht, abgelaufen oder die ID stimmt nicht."}, 404)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return self.send_json({"error": "Inserat nicht gefunden."}, 404)
+            raise
+
+        state = agent.load_json(agent.STATE_PATH, {})
+        entry = state.get(search.get("name"))
+        res["already_seen"] = res["ad"]["id"] in set(agent.seen_ids(entry))
+        return self.send_json(res)
 
     def reset(self, data):
         name = data.get("name")

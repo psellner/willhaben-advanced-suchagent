@@ -127,6 +127,19 @@
   .msg.ok { background:var(--okbg); color:var(--ok); }
   .msg.err { background:var(--nobg); color:var(--no); }
   .empty { color:var(--dim); padding:26px 0; text-align:center; }
+  .resbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+            margin:14px 0 4px; font-size:12.5px; color:var(--dim); }
+  .resbar .check { margin-top:0; }
+  .card { border:1px solid var(--line); border-radius:var(--radius);
+          padding:12px 14px; margin-top:12px; }
+  .card.y { border-color:var(--ok); background:var(--okbg); }
+  .card.n { border-color:var(--no); background:var(--nobg); }
+  .card h3 { margin:0 0 8px; font-size:13.5px; font-weight:650; }
+  .card dl { display:grid; grid-template-columns:auto 1fr; gap:4px 14px;
+             margin:0; font-size:12.5px; }
+  .card dt { color:var(--dim); }
+  .card dd { margin:0; }
+  .card a { color:inherit; text-decoration:underline; }
 </style>
 </head>
 <body>
@@ -263,6 +276,19 @@
   </fieldset>
 
 
+  <fieldset>
+    <legend>Einzelnes Inserat prüfen</legend>
+    <label for="f-checkurl">Adresse eines Inserats auf willhaben
+      <button type="button" class="q" data-h="checkurl">?</button></label>
+    <div class="bar" style="margin-top:6px">
+      <input type="text" id="f-checkurl" style="flex:1;min-width:220px"
+             placeholder="https://www.willhaben.at/iad/kaufen-und-verkaufen/d/…">
+      <button id="btnCheckUrl">Prüfen</button>
+    </div>
+    <div class="help" data-help="checkurl"></div>
+    <div id="checkres"></div>
+  </fieldset>
+
   <div class="bar">
     <label class="check" style="margin:0 8px 0 0"><input type="checkbox" id="f-enabled"> aktiv</label>
     <button class="primary" id="btnPreview">Vorschau</button>
@@ -296,6 +322,7 @@ const HELP = {
   rows: "Wie viele der neuesten Inserate je Abfrage geholt werden. 30 genügt im Minutentakt weit. Höher nur, wenn deine Suche mehr als 30 Neuzugänge pro Intervall hat.",
   reach: "willhaben kann nur „nur PayLivery“. Die Oder-Verknüpfung rechnet der Agent selbst: ein Inserat kommt durch, wenn es entweder per PayLivery versendet wird oder nah genug liegt, um es abzuholen. Praktisch, wenn dir beides recht ist, aber nicht ein Versand quer durchs Land ohne Käuferschutz.",
   geo: "Der Bezugspunkt für die Entfernung, gerechnet als Luftlinie. Adresse, Ort oder Postleitzahl eintippen und auf Suchen drücken, dann bei mehreren Treffern den richtigen wählen. „Mein Standort“ fragt den Browser und trägt die gefundene Adresse ein. Gesucht wird nur in Österreich. Die Suche läuft über OpenStreetMap, dorthin geht also der Suchtext beziehungsweise die Koordinaten; gespeichert wird alles nur in deiner eigenen Konfiguration.",
+  checkurl: "Beantwortet für ein bestimmtes Inserat, was die Vorschau für die ganze Trefferliste beantwortet: kommt es durch diesen Filter? Adresse aus dem Browser kopieren und einfügen, die nackte Inserats-ID genügt auch. — Geprüft wird zusätzlich, ob die Suche das Inserat gerade überhaupt anliefert. Beides ist nicht dasselbe: ein Inserat kann jeden Filter passieren und trotzdem nie gemeldet werden, weil keine deiner Schreibweisen darauf passt oder weil es aus dem Abfragefenster herausgerutscht ist.",
   req: "Mindestens eines dieser Wörter muss im Titel stehen, sonst wird das Inserat verworfen. Der wirksamste Filter, weil er alles aussortiert, was gar nicht dein Produkt ist. — Die Schreibweise ist egal: Trennzeichen zwischen den Wortteilen werden mitgetroffen, egal ob Leerzeichen, Bindestrich, Punkt oder gar nichts. „ps 5“ findet PS5, PS-5 und ps.5 gleichermaßen, „playstation 5“ auch PlayStation-5. Umlaute darfst du umschreiben, „hülle“ findet auch „huelle“.",
   blocktitle: "Kommt eines dieser Wörter irgendwo im Titel vor, ist das Inserat draußen. Gedacht für falsche Produkte und für Leute, die selbst etwas suchen statt verkaufen. — Beispiel: „ps 4, playstation 3, suche, tausche“.",
   blockmain: "Wie oben, aber es zählt nur der Anfang des Titels bis zur ersten Aufzählung. Damit schließt du Zubehör aus, ohne gute Bundles zu verlieren: „Playstation 5 Spiele“ fliegt raus, „PS5 Slim Digital + 2 Controller“ bleibt drin, weil der Controller dort nur eine Beigabe ist. Genau dafür gibt es dieses Feld getrennt vom Feld darüber.",
@@ -455,6 +482,10 @@ function renderEditor() {
       (e) => { msg.textContent = "nicht ermittelbar: " + e.message; });
   };
   $("btnPreview").onclick = preview;
+  $("btnCheckUrl").onclick = checkUrl;
+  $("f-checkurl").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); checkUrl(); }
+  });
   $("btnReset").onclick = resetState;
   $("btnDel").onclick = () => {
     if (!confirm("Suche „" + s.name + "“ löschen?")) return;
@@ -577,17 +608,24 @@ function note(cls, txt) {
   if (m) m.innerHTML = '<div class="msg ' + cls + '">' + esc(txt) + '</div>';
 }
 
+// Die zuletzt geholte Vorschau. Der Haken "nur Treffer" zeichnet daraus neu,
+// statt willhaben ein zweites Mal zu fragen.
+let ROWS = [];
+let ONLY_PASS = false;
+
 async function preview() {
   collect();
   const btn = $("btnPreview");
   btn.disabled = true; btn.textContent = "lädt …";
   $("res").innerHTML = "";
+  ROWS = [];
   try {
     const d = await api("/api/preview", "POST", { search: CFG.searches[SEL] });
     note("ok", d.passed + " von " + d.checked + " geprüften Inseraten kommen durch. " +
                 "Bei willhaben insgesamt: " + d.total_on_willhaben + ".");
-    renderSources(d.sources);
-    renderResults(d.results);
+    $("res").innerHTML = sourcesTable(d.sources) + '<div id="resRows"></div>';
+    ROWS = d.results;
+    drawRows();
   } catch (e) {
     note("err", "Vorschau fehlgeschlagen: " + e.message);
   }
@@ -597,8 +635,8 @@ async function preview() {
 // Zeigt je Schreibweise, was sie liefert und wie viel davon nur sie liefert.
 // Eine Variante mit dauerhaft 0 in der letzten Spalte kann weg, sie kostet
 // nur eine Abfrage je Durchlauf.
-function renderSources(sources) {
-  if (!sources || sources.length < 2) return;
+function sourcesTable(sources) {
+  if (!sources || sources.length < 2) return "";
   let h = '<table><thead><tr><th>Suchbegriff</th><th class="num">bei willhaben</th>' +
           '<th class="num">geholt</th><th class="num">nur hierüber</th></tr></thead><tbody>';
   for (const s of sources) {
@@ -610,11 +648,26 @@ function renderSources(sources) {
           '<td class="num">' + s.only_here + '</td>') +
       '</tr>';
   }
-  $("res").innerHTML = h + '</tbody></table>';
+  return h + '</tbody></table>';
 }
 
-function renderResults(rows) {
-  if (!rows.length) { $("res").innerHTML += '<div class="empty">Keine Inserate.</div>'; return; }
+// Haken und Tabelle zusammen, damit der Haken nach dem Neuzeichnen wieder hängt.
+function drawRows() {
+  const box = $("resRows");
+  if (!box) return;
+  const passed = ROWS.filter((r) => r.ok);
+  const shown = ONLY_PASS ? passed : ROWS;
+  box.innerHTML =
+    '<div class="resbar"><label class="check"><input type="checkbox" id="onlyPass"' +
+    (ONLY_PASS ? " checked" : "") + '> nur Treffer</label><span>' +
+    passed.length + " von " + ROWS.length + " kommen durch</span></div>" +
+    resultsTable(shown);
+  const cb = $("onlyPass");
+  if (cb) cb.onchange = () => { ONLY_PASS = cb.checked; drawRows(); };
+}
+
+function resultsTable(rows) {
+  if (!rows.length) return '<div class="empty">Keine Inserate.</div>';
   let h = '<table><thead><tr><th></th><th></th><th>Inserat</th>' +
           '<th class="num">Preis</th><th>Ort</th><th>Bewertung</th></tr></thead><tbody>';
   for (const r of rows) {
@@ -631,7 +684,60 @@ function renderResults(rows) {
         (r.km != null ? '<div class="hint">' + r.km + ' km</div>' : '') + '</td>' +
       '<td>' + esc(r.reason || "alle Filter passen") + '</td></tr>';
   }
-  $("res").innerHTML += h + "</tbody></table>";
+  return h + "</tbody></table>";
+}
+
+async function checkUrl() {
+  collect();
+  const url = $("f-checkurl").value.trim();
+  const box = $("checkres");
+  if (!url) { box.innerHTML = ""; return; }
+  const btn = $("btnCheckUrl");
+  btn.disabled = true; btn.textContent = "lädt …";
+  box.innerHTML = "";
+  try {
+    const d = await api("/api/check-url", "POST",
+                        { search: CFG.searches[SEL], url: url });
+    box.innerHTML = checkCard(d);
+  } catch (e) {
+    box.innerHTML = '<div class="card n">' + esc(e.message) + "</div>";
+  }
+  btn.disabled = false; btn.textContent = "Prüfen";
+}
+
+// Filterurteil und Lieferfrage getrennt ausweisen - ein Inserat kann durch
+// jeden Filter kommen und trotzdem nie im Chat landen.
+function checkCard(d) {
+  const a = d.ad;
+  const kw = (d.window || []).filter((w) => w.hit).map((w) => w.keyword);
+  const liefert = d.in_window
+    ? "ja, über " + kw.map(esc).join(", ")
+    : "nein - keine deiner Schreibweisen liefert es gerade";
+  let meldung;
+  if (!d.ok) meldung = "nein, der Filter verwirft es";
+  else if (!d.in_window) meldung = "nein, die Suche liefert es nicht an";
+  else if (d.already_seen) meldung = "nein, es ist bereits als bekannt gemerkt";
+  else meldung = "ja, beim nächsten Durchlauf";
+
+  return '<div class="card ' + (d.ok ? "y" : "n") + '">' +
+    "<h3>" + (d.ok ? "Kommt durch den Filter" : "Wird verworfen") +
+    (d.reason ? " — " + esc(d.reason) : "") + "</h3>" +
+    "<dl>" +
+    "<dt>Inserat</dt><dd><a href=" + '"' + esc(a.url) + '"' +
+      ' target="_blank" rel="noopener">' + esc(a.title) + "</a></dd>" +
+    "<dt>Preis</dt><dd>" + esc(a.price_display) + "</dd>" +
+    "<dt>Ort</dt><dd>" + esc(a.postcode + " " + a.location) +
+      (a.km != null ? " · " + a.km + " km" : " · Entfernung unbekannt") +
+      (d.coords_source ? " (" + esc(d.coords_source) + ")" : "") +
+      (a.paylivery ? " · PayLivery" : "") + "</dd>" +
+    "<dt>Anbieter</dt><dd>" + (a.private ? "privat" : "gewerblich") + "</dd>" +
+    "<dt>Zustand</dt><dd>" + esc(a.status || "unbekannt") +
+      (a.active ? "" : " — nicht mehr aktiv") + "</dd>" +
+    "<dt>Suche liefert es</dt><dd>" + liefert + "</dd>" +
+    "<dt>Schon gemerkt</dt><dd>" +
+      (d.already_seen ? "ja, es zählt nicht mehr als neu" : "nein") + "</dd>" +
+    "<dt>Meldung käme</dt><dd><b>" + esc(meldung) + "</b></dd>" +
+    "</dl></div>";
 }
 
 async function resetState() {

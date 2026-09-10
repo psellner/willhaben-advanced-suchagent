@@ -127,6 +127,22 @@
   .msg.ok { background:var(--okbg); color:var(--ok); }
   .msg.err { background:var(--nobg); color:var(--no); }
   .empty { color:var(--dim); padding:26px 0; text-align:center; }
+  .resbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+            margin:14px 0 4px; font-size:12.5px; color:var(--dim); }
+  .resbar .check { margin-top:0; }
+  .resbar select { width:auto; padding:4px 7px; font-size:12.5px; }
+  .resbar label.sort { display:flex; align-items:center; gap:6px; }
+  .resbar .spacer { flex:1; }
+  .card { border:1px solid var(--line); border-radius:var(--radius);
+          padding:12px 14px; margin-top:12px; }
+  .card.y { border-color:var(--ok); background:var(--okbg); }
+  .card.n { border-color:var(--no); background:var(--nobg); }
+  .card h3 { margin:0 0 8px; font-size:13.5px; font-weight:650; }
+  .card dl { display:grid; grid-template-columns:auto 1fr; gap:4px 14px;
+             margin:0; font-size:12.5px; }
+  .card dt { color:var(--dim); }
+  .card dd { margin:0; }
+  .card a { color:inherit; text-decoration:underline; }
 </style>
 </head>
 <body>
@@ -166,18 +182,15 @@
 <template id="tpl">
   <h2>Suche bearbeiten</h2>
 
-  <div class="row">
-    <div>
-      <label for="f-name"><b>Name</b> <button type="button" class="q" data-h="name">?</button></label>
-      <input type="text" id="f-name" placeholder="ps5-konsole">
-      <div class="help" data-help="name"></div>
-    </div>
-    <div>
-      <label for="f-keyword"><b>Suchbegriff</b> <button type="button" class="q" data-h="keyword">?</button></label>
-      <input type="text" id="f-keyword" placeholder="playstation 5">
-      <div class="help" data-help="keyword"></div>
-    </div>
-  </div>
+  <label for="f-name"><b>Name</b> <button type="button" class="q" data-h="name">?</button></label>
+  <input type="text" id="f-name" placeholder="ps5-konsole">
+  <div class="help" data-help="name"></div>
+
+  <label for="f-keyword"><b>Suchbegriffe</b>
+    <button type="button" class="q" data-h="keyword">?</button></label>
+  <input type="text" id="f-keyword" placeholder="playstation 5, play station 5, ps5">
+  <div class="chips" data-chips="f-keyword"></div>
+  <div class="help" data-help="keyword"></div>
 
   <label for="f-url">Oder komplette willhaben-URL aus dem Browser
     <button type="button" class="q" data-h="url">?</button></label>
@@ -266,6 +279,19 @@
   </fieldset>
 
 
+  <fieldset>
+    <legend>Einzelnes Inserat prüfen</legend>
+    <label for="f-checkurl">Adresse eines Inserats auf willhaben
+      <button type="button" class="q" data-h="checkurl">?</button></label>
+    <div class="bar" style="margin-top:6px">
+      <input type="text" id="f-checkurl" style="flex:1;min-width:220px"
+             placeholder="https://www.willhaben.at/iad/kaufen-und-verkaufen/d/…">
+      <button id="btnCheckUrl">Prüfen</button>
+    </div>
+    <div class="help" data-help="checkurl"></div>
+    <div id="checkres"></div>
+  </fieldset>
+
   <div class="bar">
     <label class="check" style="margin:0 8px 0 0"><input type="checkbox" id="f-enabled"> aktiv</label>
     <button class="primary" id="btnPreview">Vorschau</button>
@@ -293,13 +319,14 @@ const KNOWN_PARAMS = ["keyword", "PRICE_FROM", "PRICE_TO", "ISPRIVATE"];
 
 const HELP = {
   name: "Führt den Zustand dieser Suche. Beim Umbenennen gilt sie als neu: der nächste Lauf markiert den aktuellen Bestand stumm und meldet erst danach wieder.",
-  keyword: "Das, was du auch oben in das Suchfeld auf willhaben tippen würdest. Wird mitgeschickt, filtert also schon dort.",
+  keyword: "Das, was du auch oben in das Suchfeld auf willhaben tippen würdest. Wird mitgeschickt, filtert also schon dort. — Mehrere Schreibweisen mit Komma trennen: jede wird einzeln abgefragt und die Ergebnisse werden zusammengelegt. Das ist wichtig, weil willhaben je Schreibweise eine andere Trefferliste liefert und du immer nur die neuesten Inserate daraus bekommst: „play station 5“ und „ps5“ finden zu großen Teilen verschiedene Inserate. Zwei bis fünf Varianten sind sinnvoll, jede kostet eine eigene Abfrage. Welche etwas beiträgt, zeigt dir die Vorschau.",
   url: "Am bequemsten: die Suche im Browser auf willhaben einstellen und die Adresszeile hier einfügen. Alle dort gesetzten Filter bleiben erhalten, auch Kategorie und Bundesland. Ist eine URL gesetzt, gewinnt sie gegenüber Suchbegriff und Preisfeldern.",
   price: "Preisgrenze direkt bei willhaben. Das reduziert die Treffermenge schon vor dem Abruf und ist der wirksamste Filter überhaupt.",
   rows: "Wie viele der neuesten Inserate je Abfrage geholt werden. 30 genügt im Minutentakt weit. Höher nur, wenn deine Suche mehr als 30 Neuzugänge pro Intervall hat.",
   reach: "willhaben kann nur „nur PayLivery“. Die Oder-Verknüpfung rechnet der Agent selbst: ein Inserat kommt durch, wenn es entweder per PayLivery versendet wird oder nah genug liegt, um es abzuholen. Praktisch, wenn dir beides recht ist, aber nicht ein Versand quer durchs Land ohne Käuferschutz.",
   geo: "Der Bezugspunkt für die Entfernung, gerechnet als Luftlinie. Adresse, Ort oder Postleitzahl eintippen und auf Suchen drücken, dann bei mehreren Treffern den richtigen wählen. „Mein Standort“ fragt den Browser und trägt die gefundene Adresse ein. Gesucht wird nur in Österreich. Die Suche läuft über OpenStreetMap, dorthin geht also der Suchtext beziehungsweise die Koordinaten; gespeichert wird alles nur in deiner eigenen Konfiguration.",
-  req: "Mindestens eines dieser Wörter muss im Titel stehen, sonst wird das Inserat verworfen. Der wirksamste Filter, weil er alles aussortiert, was gar nicht dein Produkt ist. — Tipp: schreib mehrteilige Begriffe mit Leerzeichen. Fehlende Leerzeichen werden mitgetroffen, zusätzliche nicht. „play station 5“ findet deshalb auch PlayStation 5 und Playstation5, umgekehrt findet „playstation 5“ die getrennte Schreibweise nicht. Für PS5 brauchst du zusätzlich „ps 5“.",
+  checkurl: "Beantwortet für ein bestimmtes Inserat, was die Vorschau für die ganze Trefferliste beantwortet: kommt es durch diesen Filter? Adresse aus dem Browser kopieren und einfügen, die nackte Inserats-ID genügt auch. — Geprüft wird zusätzlich, ob die Suche das Inserat gerade überhaupt anliefert. Beides ist nicht dasselbe: ein Inserat kann jeden Filter passieren und trotzdem nie gemeldet werden, weil keine deiner Schreibweisen darauf passt oder weil es aus dem Abfragefenster herausgerutscht ist.",
+  req: "Mindestens eines dieser Wörter muss im Titel stehen, sonst wird das Inserat verworfen. Der wirksamste Filter, weil er alles aussortiert, was gar nicht dein Produkt ist. — Die Schreibweise ist egal: Trennzeichen zwischen den Wortteilen werden mitgetroffen, egal ob Leerzeichen, Bindestrich, Punkt oder gar nichts. „ps 5“ findet PS5, PS-5 und ps.5 gleichermaßen, „playstation 5“ auch PlayStation-5. Umlaute darfst du umschreiben, „hülle“ findet auch „huelle“.",
   blocktitle: "Kommt eines dieser Wörter irgendwo im Titel vor, ist das Inserat draußen. Gedacht für falsche Produkte und für Leute, die selbst etwas suchen statt verkaufen. — Beispiel: „ps 4, playstation 3, suche, tausche“.",
   blockmain: "Wie oben, aber es zählt nur der Anfang des Titels bis zur ersten Aufzählung. Damit schließt du Zubehör aus, ohne gute Bundles zu verlieren: „Playstation 5 Spiele“ fliegt raus, „PS5 Slim Digital + 2 Controller“ bleibt drin, weil der Controller dort nur eine Beigabe ist. Genau dafür gibt es dieses Feld getrennt vom Feld darüber.",
   blocktext: "Durchsucht auch den Beschreibungstext, nicht nur den Titel. Gedacht für Angaben, die selten in die Überschrift wandern. — Beispiel: „defekt, bastler, ersatzteil“.",
@@ -310,8 +337,13 @@ const joinW = (a) => (a || []).join(", ");
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+// Basis der Oberflaeche, damit die Aufrufe auch hinter einem Reverse-Proxy
+// stimmen, der die App unter einem Unterpfad einhaengt (https://nas/willhaben/).
+// Am Wurzelpfad kommt dasselbe heraus wie vorher.
+const BASE = location.pathname.replace(/[^/]*$/, "");
+
 async function api(path, method, body) {
-  const r = await fetch(path, {
+  const r = await fetch(BASE + path.replace(/^\//, ""), {
     method: method || "GET",
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : null
@@ -319,6 +351,14 @@ async function api(path, method, body) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
   return d;
+}
+
+// Bis einschließlich der Version mit einem einzigen Suchbegriff stand der
+// in params.keyword. Beim Laden wird daraus die erste Schreibweise.
+function searchKeywords(s) {
+  if (s.keywords && s.keywords.length) return s.keywords;
+  const one = s.keyword || (s.params && s.params.keyword);
+  return one ? [one] : [];
 }
 
 function blank(name) {
@@ -341,7 +381,7 @@ function renderList(st) {
   CFG.searches.forEach((s, i) => {
     const li = document.createElement("li");
     if (i === SEL) li.className = "sel";
-    const kw = s.keyword || (s.params && s.params.keyword) || (s.url ? "aus URL" : "—");
+    const kw = joinW(searchKeywords(s)) || (s.url ? "aus URL" : "—");
     const seen = (st && st.seen_counts && st.seen_counts[s.name]) || 0;
     li.innerHTML =
       '<span class="nm">' + esc(s.name) +
@@ -375,7 +415,7 @@ function renderEditor() {
   const f = s.filter || {};
 
   $("f-name").value = s.name || "";
-  $("f-keyword").value = s.keyword || p.keyword || "";
+  $("f-keyword").value = joinW(searchKeywords(s));
   $("f-url").value = s.url || "";
   $("f-pfrom").value = p.PRICE_FROM || "";
   $("f-pto").value = p.PRICE_TO || "";
@@ -445,6 +485,10 @@ function renderEditor() {
       (e) => { msg.textContent = "nicht ermittelbar: " + e.message; });
   };
   $("btnPreview").onclick = preview;
+  $("btnCheckUrl").onclick = checkUrl;
+  $("f-checkurl").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); checkUrl(); }
+  });
   $("btnReset").onclick = resetState;
   $("btnDel").onclick = () => {
     if (!confirm("Suche „" + s.name + "“ löschen?")) return;
@@ -520,7 +564,12 @@ function collect() {
   for (const k of Object.keys(s.params || {}))
     if (KNOWN_PARAMS.indexOf(k) < 0) p[k] = s.params[k];
 
-  if ($("f-keyword").value.trim()) p.keyword = $("f-keyword").value.trim();
+  const kws = words($("f-keyword").value);
+  // Die erste Schreibweise bleibt zusätzlich in params, damit eine hier
+  // gespeicherte Suche auch für ältere Leser der Konfiguration einen
+  // Suchbegriff hat. Abgefragt werden alle aus s.keywords.
+  if (kws.length) { p.keyword = kws[0]; s.keywords = kws; }
+  else { delete s.keywords; }
   if ($("f-pfrom").value) p.PRICE_FROM = String($("f-pfrom").value);
   if ($("f-pto").value) p.PRICE_TO = String($("f-pto").value);
   if ($("f-private").checked) p.ISPRIVATE = "1";
@@ -562,24 +611,121 @@ function note(cls, txt) {
   if (m) m.innerHTML = '<div class="msg ' + cls + '">' + esc(txt) + '</div>';
 }
 
+// Die zuletzt geholte Vorschau. Der Haken "nur Treffer" zeichnet daraus neu,
+// statt willhaben ein zweites Mal zu fragen.
+let ROWS = [];
+let ONLY_PASS = false;
+let SORT = "date_desc";
+
+// Sortierschlüssel je Inserat. Fehlende Werte - "Preis auf Anfrage" (Preis 0)
+// und unbekannte Entfernung - haben keine sinnvolle Stelle in der Reihenfolge
+// und wandern deshalb in beiden Richtungen ans Ende.
+const SORTS = {
+  date_desc:  { key: (r) => r.published_ts || 0, dir: -1 },
+  date_asc:   { key: (r) => r.published_ts || 0, dir:  1 },
+  price_asc:  { key: (r) => (r.price > 0 ? r.price : null), dir:  1 },
+  price_desc: { key: (r) => (r.price > 0 ? r.price : null), dir: -1 },
+  km_asc:     { key: (r) => r.km, dir:  1 },
+  km_desc:    { key: (r) => r.km, dir: -1 },
+};
+
+const SORT_LABELS = [
+  ["date_desc",  "Datum: neueste zuerst"],
+  ["date_asc",   "Datum: älteste zuerst"],
+  ["price_asc",  "Preis: günstigste zuerst"],
+  ["price_desc", "Preis: teuerste zuerst"],
+  ["km_asc",     "Entfernung: nächste zuerst"],
+  ["km_desc",    "Entfernung: weiteste zuerst"],
+];
+
+// Sortiert eine Kopie, damit ROWS die vom Server gelieferte Reihenfolge behält.
+function sortRows(rows) {
+  const s = SORTS[SORT] || SORTS.date_desc;
+  return rows.slice().sort((a, b) => {
+    const x = s.key(a), y = s.key(b);
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return x === y ? 0 : (x < y ? -1 : 1) * s.dir;
+  });
+}
+
 async function preview() {
   collect();
   const btn = $("btnPreview");
   btn.disabled = true; btn.textContent = "lädt …";
   $("res").innerHTML = "";
+  ROWS = [];
   try {
     const d = await api("/api/preview", "POST", { search: CFG.searches[SEL] });
     note("ok", d.passed + " von " + d.checked + " geprüften Inseraten kommen durch. " +
                 "Bei willhaben insgesamt: " + d.total_on_willhaben + ".");
-    renderResults(d.results);
+    $("res").innerHTML = sourcesTable(d.sources) + '<div id="resRows"></div>';
+    ROWS = d.results;
+    drawRows();
   } catch (e) {
     note("err", "Vorschau fehlgeschlagen: " + e.message);
   }
   btn.disabled = false; btn.textContent = "Vorschau";
 }
 
-function renderResults(rows) {
-  if (!rows.length) { $("res").innerHTML = '<div class="empty">Keine Inserate.</div>'; return; }
+// Zeigt je Schreibweise, was sie liefert und wie viel davon nur sie liefert.
+// Eine Variante mit dauerhaft 0 in der letzten Spalte kann weg, sie kostet
+// nur eine Abfrage je Durchlauf.
+function sourcesTable(sources) {
+  if (!sources || sources.length < 2) return "";
+  let h = '<table><thead><tr><th>Suchbegriff</th><th class="num">bei willhaben</th>' +
+          '<th class="num">geholt</th><th class="num">nur hierüber</th></tr></thead><tbody>';
+  for (const s of sources) {
+    h += '<tr><td>' + esc(s.keyword || "—") + '</td>' +
+      (s.error
+        ? '<td colspan="3">' + esc(s.error) + '</td>'
+        : '<td class="num">' + s.found + '</td>' +
+          '<td class="num">' + s.fetched + '</td>' +
+          '<td class="num">' + s.only_here + '</td>') +
+      '</tr>';
+  }
+  return h + '</tbody></table>';
+}
+
+// Haken und Tabelle zusammen, damit der Haken nach dem Neuzeichnen wieder hängt.
+function drawRows() {
+  const box = $("resRows");
+  if (!box) return;
+  // Die Leiste wird komplett neu gezeichnet, das Bedienelement darunter ist
+  // danach ein anderes. Ohne das hier verlöre die Tastatur nach der ersten
+  // Auswahl den Fokus und der nächste Tastendruck ginge ins Leere.
+  const focused = document.activeElement ? document.activeElement.id : "";
+  const passed = ROWS.filter((r) => r.ok);
+  const shown = ONLY_PASS ? passed : ROWS;
+  const opts = SORT_LABELS.map(([v, t]) =>
+    '<option value="' + v + '"' + (SORT === v ? " selected" : "") + ">" + t + "</option>").join("");
+  box.innerHTML =
+    '<div class="resbar"><label class="check"><input type="checkbox" id="onlyPass"' +
+    (ONLY_PASS ? " checked" : "") + '> nur Treffer</label><span>' +
+    passed.length + " von " + ROWS.length + " kommen durch</span>" +
+    '<span class="spacer"></span>' +
+    '<label class="sort">sortieren nach' +
+    '<select id="sortBy">' + opts + "</select></label></div>" +
+    resultsTable(sortRows(shown));
+  const cb = $("onlyPass");
+  if (cb) cb.onchange = () => { ONLY_PASS = cb.checked; drawRows(); };
+  const sel = $("sortBy");
+  if (sel) sel.onchange = () => { SORT = sel.value; drawRows(); };
+  const back = $(focused);
+  if (back) back.focus();
+}
+
+// willhaben liefert reservierte Inserate ganz normal in der Suche mit. Sie
+// kommen durch jeden Filter, sind aber meist schon vergeben - deshalb in der
+// Vorschau ausgewiesen statt verschwiegen.
+const STATUS_TEXT = { reserved: "reserviert", sold: "verkauft",
+                      expired: "abgelaufen", deleted: "gelöscht" };
+
+function statusText(id) { return STATUS_TEXT[id] || id; }
+
+function resultsTable(rows) {
+  if (!rows.length) return '<div class="empty">Keine Inserate.</div>';
   let h = '<table><thead><tr><th></th><th></th><th>Inserat</th>' +
           '<th class="num">Preis</th><th>Ort</th><th>Bewertung</th></tr></thead><tbody>';
   for (const r of rows) {
@@ -590,13 +736,68 @@ function renderResults(rows) {
       '<td><a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.title) + '</a>' +
         '<div class="hint">' + esc((r.published || "").replace("T", " ").replace("Z", "")) +
         ' · ' + (r.private ? "privat" : "gewerblich") +
-        (r.paylivery ? ' · <b>PayLivery</b>' : '') + '</div></td>' +
+        (r.paylivery ? ' · <b>PayLivery</b>' : '') +
+        (r.status && r.status !== "active" ? ' · <b>' + esc(statusText(r.status)) + '</b>' : '') +
+        '</div></td>' +
       '<td class="num">' + esc(r.price_display) + '</td>' +
       '<td>' + esc(r.postcode + " " + r.location) +
         (r.km != null ? '<div class="hint">' + r.km + ' km</div>' : '') + '</td>' +
       '<td>' + esc(r.reason || "alle Filter passen") + '</td></tr>';
   }
-  $("res").innerHTML = h + "</tbody></table>";
+  return h + "</tbody></table>";
+}
+
+async function checkUrl() {
+  collect();
+  const url = $("f-checkurl").value.trim();
+  const box = $("checkres");
+  if (!url) { box.innerHTML = ""; return; }
+  const btn = $("btnCheckUrl");
+  btn.disabled = true; btn.textContent = "lädt …";
+  box.innerHTML = "";
+  try {
+    const d = await api("/api/check-url", "POST",
+                        { search: CFG.searches[SEL], url: url });
+    box.innerHTML = checkCard(d);
+  } catch (e) {
+    box.innerHTML = '<div class="card n">' + esc(e.message) + "</div>";
+  }
+  btn.disabled = false; btn.textContent = "Prüfen";
+}
+
+// Filterurteil und Lieferfrage getrennt ausweisen - ein Inserat kann durch
+// jeden Filter kommen und trotzdem nie im Chat landen.
+function checkCard(d) {
+  const a = d.ad;
+  const kw = (d.window || []).filter((w) => w.hit).map((w) => w.keyword);
+  const liefert = d.in_window
+    ? "ja, über " + kw.map(esc).join(", ")
+    : "nein - keine deiner Schreibweisen liefert es gerade";
+  let meldung;
+  if (!d.ok) meldung = "nein, der Filter verwirft es";
+  else if (!d.in_window) meldung = "nein, die Suche liefert es nicht an";
+  else if (d.already_seen) meldung = "nein, es ist bereits als bekannt gemerkt";
+  else meldung = "ja, beim nächsten Durchlauf";
+
+  return '<div class="card ' + (d.ok ? "y" : "n") + '">' +
+    "<h3>" + (d.ok ? "Kommt durch den Filter" : "Wird verworfen") +
+    (d.reason ? " — " + esc(d.reason) : "") + "</h3>" +
+    "<dl>" +
+    "<dt>Inserat</dt><dd><a href=" + '"' + esc(a.url) + '"' +
+      ' target="_blank" rel="noopener">' + esc(a.title) + "</a></dd>" +
+    "<dt>Preis</dt><dd>" + esc(a.price_display) + "</dd>" +
+    "<dt>Ort</dt><dd>" + esc(a.postcode + " " + a.location) +
+      (a.km != null ? " · " + a.km + " km" : " · Entfernung unbekannt") +
+      (d.coords_source ? " (" + esc(d.coords_source) + ")" : "") +
+      (a.paylivery ? " · PayLivery" : "") + "</dd>" +
+    "<dt>Anbieter</dt><dd>" + (a.private ? "privat" : "gewerblich") + "</dd>" +
+    "<dt>Zustand</dt><dd>" + esc(a.status ? statusText(a.status) : "unbekannt") +
+      (a.active ? "" : " — nicht mehr aktiv") + "</dd>" +
+    "<dt>Suche liefert es</dt><dd>" + liefert + "</dd>" +
+    "<dt>Schon gemerkt</dt><dd>" +
+      (d.already_seen ? "ja, es zählt nicht mehr als neu" : "nein") + "</dd>" +
+    "<dt>Meldung käme</dt><dd><b>" + esc(meldung) + "</b></dd>" +
+    "</dl></div>";
 }
 
 async function resetState() {

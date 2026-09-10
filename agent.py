@@ -61,8 +61,12 @@ def http_post_json(url, payload, timeout=30):
 
 # ---------------------------------------------------------------- willhaben
 
-def build_api_url(search):
-    """Baut die REST-URL aus einer willhaben-Suchseiten-URL oder aus Einzelfeldern."""
+def build_api_url(search, keyword=None):
+    """Baut die REST-URL aus einer willhaben-Suchseiten-URL oder aus Einzelfeldern.
+
+    `keyword` überschreibt den Suchbegriff der Suche - so entsteht aus einer
+    Suche je Schreibweise eine eigene Abfrage.
+    """
     if search.get("url"):
         parsed = urllib.parse.urlparse(search["url"])
         # /iad/kaufen-und-verkaufen/marktplatz -> kaufen-und-verkaufen/marktplatz
@@ -75,6 +79,9 @@ def build_api_url(search):
         params = dict(search.get("params") or {})
         if search.get("keyword"):
             params["keyword"] = search["keyword"]
+
+    if keyword is not None:
+        params["keyword"] = keyword
 
     reach = (search.get("filter") or {}).get("reach") or {}
     if reach.get("mode") == "paylivery":
@@ -124,6 +131,7 @@ def haversine_km(a, b):
 def parse_ad(ad):
     seo = attr(ad, "SEO_URL")
     mmo = attr(ad, "MMO")
+    status = (ad.get("advertStatus") or {}).get("id") or ""
     try:
         price = float(attr(ad, "PRICE", "0") or 0)
     except ValueError:
@@ -143,21 +151,100 @@ def parse_ad(ad):
         "postcode": attr(ad, "POSTCODE"),
         "state": attr(ad, "STATE"),
         "published": attr(ad, "PUBLISHED_String"),
+        # Epoch in Millisekunden. Nur zum Sortieren der vereinigten
+        # Trefferliste gebraucht, deshalb nicht in der Oberfläche sichtbar.
+        "published_ts": int(attr(ad, "PUBLISHED", "0") or 0),
         "private": attr(ad, "ISPRIVATE") == "1",
         "url": "https://www.willhaben.at/iad/" + seo if seo else "",
         "image": "https://cache.willhaben.at/mmo/" + mmo if mmo else "",
+        # Auch die Suche kennt den Status, nicht nur die Detailseite. Sie
+        # liefert reservierte Inserate ganz normal mit aus - in der Vorschau
+        # sollen sie als solche erkennbar sein.
+        "status": status,
+        "active": status in LIVE_STATUS,
     }
 
 
-def fetch(search):
-    raw = http_get(build_api_url(search), headers={
+def search_keywords(search):
+    """Die Schreibweisen, mit denen diese Suche abgefragt wird.
+
+    willhabens API kennt nur einen `keyword`-Parameter, und der entscheidet
+    schon, welche Inserate überhaupt ankommen: "play station 5" und "ps5"
+    liefern deutlich verschiedene Trefferlisten. Deshalb wird je Schreibweise
+    einmal abgefragt und danach vereinigt.
+
+    Leere Liste heißt: den Suchbegriff nehmen, der ohnehin in `params` oder
+    in der URL steht. Dafür steht das einzelne None.
+    """
+    out, seen = [], set()
+    for k in (search.get("keywords") or []):
+        k = (k or "").strip()
+        # Doppelte Schreibweisen kosten einen Request und bringen nichts.
+        if k and k.lower() not in seen:
+            seen.add(k.lower())
+            out.append(k)
+    return out or [None]
+
+
+def url_keyword(url):
+    """Der Suchbegriff, der tatsächlich in einer fertigen Abfrage-URL steht."""
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+    return q.get("keyword", "")
+
+
+def fetch_one(search, keyword=None):
+    url = build_api_url(search, keyword)
+    raw = http_get(url, headers={
         "Accept": "application/json",
         "User-Agent": UA,
         "x-wh-client": WH_CLIENT,
     })
     data = json.loads(raw.decode("utf-8"))
     ads = data.get("advertSummaryList", {}).get("advertSummary", []) or []
-    return [parse_ad(a) for a in ads], data.get("rowsFound", 0)
+    return [parse_ad(a) for a in ads], data.get("rowsFound", 0), url
+
+
+def fetch(search):
+    """Alle Schreibweisen abfragen und zu einer Trefferliste vereinigen.
+
+    Gibt (Inserate, größte Gesamtzahl, Herkunft je Schreibweise) zurück. Die
+    Herkunft trägt die Vorschau, damit sichtbar wird, was jede Schreibweise
+    beisteuert. Fällt eine einzelne aus, laufen die übrigen weiter - fällt
+    keine durch, kommt der Fehler wie bisher heraus.
+    """
+    by_id, sources, failed = {}, [], 0
+    for kw in search_keywords(search):
+        src = {"keyword": kw}
+        try:
+            ads, found, url = fetch_one(search, kw)
+        except Exception as e:
+            failed += 1
+            src["url"] = build_api_url(search, kw)
+            src["keyword"] = kw if kw is not None else url_keyword(src["url"])
+            src["error"] = str(e)
+            src["last_exception"] = e
+            sources.append(src)
+            log("Suchbegriff „%s“ fehlgeschlagen: %s" % (src["keyword"], e))
+            continue
+        src["url"] = url
+        src["keyword"] = kw if kw is not None else url_keyword(url)
+        src["found"] = found
+        src["fetched"] = len(ads)
+        # Wie viele Inserate nur über diese Schreibweise hereinkommen - das
+        # zeigt in der Vorschau, ob sich eine Variante überhaupt lohnt.
+        src["only_here"] = sum(1 for a in ads if a["id"] not in by_id)
+        for a in ads:
+            by_id.setdefault(a["id"], a)
+        sources.append(src)
+
+    if failed and failed == len(sources):
+        raise sources[0].pop("last_exception")
+    for src in sources:
+        src.pop("last_exception", None)
+
+    merged = sorted(by_id.values(), key=lambda a: a["published_ts"], reverse=True)
+    total = max([s.get("found", 0) for s in sources] or [0])
+    return merged, total, sources
 
 
 # Die Suche liefert immer nur die letzten `rows` Inserate (neueste zuerst).
@@ -180,24 +267,218 @@ def fetch_build_id():
     return m.group(1)
 
 
+# Zustände, in denen es das Inserat noch gibt. "reserved" gehört dazu: eine
+# Reservierung ist keine Löschung, sie platzt oft genug, und ein Preisrutsch
+# darauf bleibt interessant. Alles andere (verkauft, abgelaufen, gelöscht)
+# gilt als weg und wird aus der Preisverfolgung genommen.
+LIVE_STATUS = ("active", "reserved")
+
+
+def parse_ad_detail(detail, seo):
+    """Ein Inserat aus der Detailseite lesen.
+
+    Die Detailseite benennt fast alles anders als die Suche: der Titel steht
+    in `description`, Ort und Bundesland in `advertAddressDetails`, das Bild
+    in `advertImageList`. Nur Preis und Anbieterart heißen gleich. Deshalb
+    ein eigener Parser statt parse_ad() - der fand hier bloß den Preis und
+    ließ Titel, Ort und Link leer, was die Preisänderungsmeldung unbrauchbar
+    machte.
+    """
+    addr = detail.get("advertAddressDetails") or {}
+    p2pp = detail.get("p2ppOptions")
+    bilder = (detail.get("advertImageList") or {}).get("advertImage") or []
+    try:
+        price = float(attr(detail, "PRICE", "0") or 0)
+    except ValueError:
+        price = 0.0
+    status = (detail.get("advertStatus") or {}).get("id") or ""
+    return {
+        "id": str(detail.get("id") or ""),
+        "seo": seo,
+        "title": detail.get("description") or "",
+        "body": attr(detail, "DESCRIPTION"),
+        "price": price,
+        "price_display": attr(detail, "PRICE_FOR_DISPLAY") or "Preis auf Anfrage",
+        "location": addr.get("postalName") or attr(detail, "LOCATION/ADDRESS_2"),
+        "postcode": addr.get("postCode") or "",
+        "state": addr.get("province") or attr(detail, "LOCATION/ADDRESS_4"),
+        # "2026-09-01T12:00:29+0200" -> dieselbe Form wie aus der Suche.
+        "published": (detail.get("publishedDate") or "")[:19],
+        "published_ts": 0,
+        "private": attr(detail, "ISPRIVATE") == "1",
+        # None heißt "die Seite sagt nichts dazu" - dann gilt der gemerkte
+        # Stand aus der Suche. Sagt sie etwas, ist das der aktuelle Stand.
+        "paylivery": (bool(p2pp.get("deliveryOptions")) if p2pp is not None else None),
+        # Gleiches Attribut wie in der Suche, nur an anderer Stelle im JSON.
+        "coords": parse_coords(attr(detail, "COORDINATES")),
+        "url": "https://www.willhaben.at/iad/" + seo if seo else "",
+        "image": (bilder[0].get("mainImageUrl") if bilder else "") or "",
+        "status": status,
+        "active": status in LIVE_STATUS,
+    }
+
+
+# Eine Inseratsadresse endet auf "-<ID>". Der Slug davor ist willhaben egal,
+# aufgelöst wird allein über die Zahl am Ende.
+AD_ID_RE = re.compile(r"-(\d+)$")
+
+
+def seo_from_url(url, fallback_path=""):
+    """Aus einer willhaben-Adresse den Detailpfad ziehen.
+
+    Verträgt alles, was beim Kopieren anfällt: mit und ohne Schema, mit
+    angehängter Suchabfrage oder Anker, mit oder ohne Schrägstrich am Ende.
+    Eine nackte Inserats-ID genügt ebenfalls; der Slug wird dann erfunden,
+    weil willhaben ihn ohnehin nicht prüft. Leerer Rückgabewert heißt: das
+    war keine Adresse eines einzelnen Inserats.
+    """
+    url = (url or "").strip()
+    if url.isdigit():
+        vertical = (fallback_path or "kaufen-und-verkaufen").split("/")[0]
+        return "%s/d/inserat-%s" % (vertical, url)
+    path = urllib.parse.urlparse(url).path.strip("/")
+    # Auch ohne Schema ("www.willhaben.at/iad/...") landet der Host im Pfad.
+    cut = path.find("iad/")
+    if cut != -1:
+        path = path[cut + 4:]
+    return path if AD_ID_RE.search(path) else ""
+
+
+def check_ad(search, url, geocode=None):
+    """Ein einzelnes Inserat gegen eine Suche prüfen.
+
+    Beantwortet zwei Fragen, die in der Praxis gern verwechselt werden:
+    kommt das Inserat durch den Filter, und liefert die Suche es überhaupt
+    an? Ein Inserat kann jeden Filter passieren und trotzdem nie im Chat
+    landen, weil keine der Schreibweisen darauf passt oder weil es aus dem
+    Abfragefenster (`rows`) herausgerutscht ist.
+
+    `geocode` ist der letzte Rückfall für die Entfernung: eine Funktion, die
+    zu einem Ortsnamen Koordinaten liefert. Woher die Entfernung stammt,
+    steht am Ende in `coords_source`.
+    """
+    seo = seo_from_url(url, search.get("path"))
+    if not seo:
+        raise ValueError("Das ist keine Adresse eines einzelnen Inserats.")
+
+    ad = fetch_ad_detail(fetch_build_id(), seo)
+    # Nur ein Teil der Detailseiten führt Koordinaten, die Suche führt sie
+    # immer. Ohne sie fällt die Entfernungsprüfung auf "unbekannt" zurück und
+    # verwirft ein Inserat, das in Wahrheit ums Eck liegt.
+    source = "Detailseite" if ad["coords"] else ""
+
+    # Je Schreibweise eine Abfrage - genau die, die auch der Durchlauf macht.
+    window = []
+    for kw in search_keywords(search):
+        row = {"keyword": kw or url_keyword(build_api_url(search)), "hit": False}
+        try:
+            ads, _, _ = fetch_one(search, kw)
+            row["fetched"] = len(ads)
+            treffer = next((a for a in ads if a["id"] == ad["id"]), None)
+            row["hit"] = treffer is not None
+            if treffer:
+                source = source or "Suchtreffer"
+                _fill_from_search(ad, treffer)
+        except Exception as e:
+            row["error"] = str(e)
+        window.append(row)
+
+    if not ad["coords"]:
+        treffer = _probe_by_title(search, ad)
+        if treffer:
+            source = "Titelsuche"
+            _fill_from_search(ad, treffer)
+
+    if not ad["coords"] and geocode:
+        # Postleitzahl statt Adresse: die Straße nennt das Inserat nicht, und
+        # für einen Radius über zig Kilometer genügt der Ortsmittelpunkt.
+        try:
+            hits = geocode("%s %s" % (ad["postcode"], ad["location"]))
+        except Exception:
+            hits = []
+        if hits:
+            ad["coords"] = (hits[0]["lat"], hits[0]["lon"])
+            source = "Postleitzahl, daher ungefähr"
+
+    ok, why = matches(ad, search.get("filter"))
+    km = distance_km(ad, (search.get("filter") or {}).get("reach"))
+
+    row = dict(ad)
+    row.pop("coords", None)
+    row.pop("published_ts", None)
+    row["ok"] = ok
+    row["reason"] = why
+    row["km"] = round(km, 1) if km is not None else None
+    return {"ad": row, "ok": ok, "reason": why, "window": window,
+            "in_window": any(w.get("hit") for w in window),
+            "coords_source": source}
+
+
+def _fill_from_search(ad, treffer):
+    """Was die Suche besser weiß als die Detailseite, nachtragen."""
+    if not ad["coords"]:
+        ad["coords"] = treffer["coords"]
+    if ad.get("paylivery") is None:
+        ad["paylivery"] = treffer["paylivery"]
+
+
+def _probe_by_title(search, ad):
+    """Das Inserat über seinen eigenen Titel suchen, nur wegen der Koordinaten.
+
+    Greift, wenn es aus dem Abfragefenster der Suche gerutscht ist. Preis-
+    und Anbieterfilter bleiben dabei weg: gesucht wird dieses eine Inserat,
+    nicht die Trefferliste.
+    """
+    titel = " ".join((ad["title"] or "").split())[:60]
+    if not titel:
+        return None
+    probe = {"path": search.get("path") or "kaufen-und-verkaufen/marktplatz",
+             "rows": 200, "params": {"keyword": titel}}
+    try:
+        ads, _, _ = fetch_one(probe, titel)
+    except Exception:
+        return None
+    return next((a for a in ads if a["id"] == ad["id"]), None)
+
+
+class AdGone(Exception):
+    """Unter dieser Adresse liegt kein Inserat mehr."""
+
+
 def fetch_ad_detail(build_id, seo):
     """Aktuellen Stand eines einzelnen Inserats über seine Detailseite holen."""
-    url = "https://www.willhaben.at/_next/data/%s/iad/%s.json" % (
-        build_id, seo.rstrip("/"))
+    seo = seo.rstrip("/")
+    url = "https://www.willhaben.at/_next/data/%s/iad/%s.json" % (build_id, seo)
     raw = http_get(url, headers={"Accept": "application/json", "User-Agent": UA})
     data = json.loads(raw.decode("utf-8"))
-    detail = data["pageProps"]["advertDetails"]
-    parsed = parse_ad(detail)
-    parsed["active"] = (detail.get("advertStatus") or {}).get("id") == "active"
-    return parsed
+    detail = (data.get("pageProps") or {}).get("advertDetails")
+    if not detail:
+        # Gelöschte und abgelaufene Inserate liefern kein 404, sondern eine
+        # 200-Antwort mit einer Weiterleitung auf die Kategorie. Ohne diese
+        # Prüfung endet das in einem KeyError statt in einer klaren Aussage.
+        raise AdGone(seo)
+    return parse_ad_detail(detail, seo)
 
 
 # ---------------------------------------------------------------- filter
 
 # Trennt den Hauptartikel von der Zubehör-Aufzählung im Titel.
 # "PS5 Slim Digital + 2 DualSense Controller" -> "PS5 Slim Digital"
+# "und" und "samt" gehören dazu: "Verkaufe ps5 und spiele" verkauft die
+# Konsole, nicht die Spiele. Ohne diese Trenner gilt der ganze Titel als
+# Hauptartikel und ein Zubehör-Ausschluss verwirft das Inserat.
 HEAD_SPLIT = re.compile(
-    r"\s*(?:[+|&,/]|\b(?:inkl|inklusive|incl|mit|sowie|dazu|plus)\b|\s-\s)", re.I)
+    r"\s*(?:[+|&,/]|\b(?:inkl|inklusive|incl|mit|und|samt|sowie|dazu|plus)\b)", re.I)
+
+# Der Gedankenstrich ist zweideutig. Mal hängt er Zubehör an
+# ("PS5 Konsole - 2 Controller"), mal beschreibt er das Produkt selbst
+# ("PS 5 GTA VI Limited Edition - DualSense Wireless Controller"). Er trennt
+# deshalb nur, wenn dahinter eine Menge steht oder die Aufzählung weitergeht.
+# Im Zweifel trennt er nicht - lieber ein Zubehör-Inserat zu viel im Chat als
+# eine Konsole zu wenig.
+DASH = re.compile(r"\s-\s")
+DASH_LIST = re.compile(
+    r"^\s*\d|[+&]|\b(?:inkl|inklusive|incl|mit|und|samt|sowie|dazu|plus)\b", re.I)
 
 
 def title_head(title):
@@ -207,6 +488,9 @@ def title_head(title):
     ("PS5 Slim Digital + 2 DualSense Controller + Ladestation").
     """
     head = HEAD_SPLIT.split(title, 1)[0].strip()
+    strich = DASH.search(title)
+    if strich and strich.start() < len(head) and DASH_LIST.search(title[strich.end():]):
+        head = title[:strich.start()].strip()
     # Zu kurz geraten (z.B. Titel beginnt mit Trenner) - dann lieber ganzer Titel.
     return head if len(head) >= 4 else title
 
@@ -215,21 +499,46 @@ def title_head(title):
 # ausschließt, meint auch "Spiele"; wer "Controller" sagt, auch "Controllern".
 PLURAL = r"(?:e|en|er|ern|s|n)?"
 
+# Was zwischen zwei Wortteilen stehen darf. Getippt wird "play station 5",
+# im Inserat steht "PlayStation-5", "playstation 5" oder "PS5" - für den
+# Filter ist das dasselbe Produkt.
+SEP = r"[\s._/-]*"
+
+# Umlaute werden in Inseraten oft umschrieben und umgekehrt. Wer "hülle"
+# eintippt, meint auch "huelle".
+UMLAUT = {"ä": "(?:ä|ae)", "ö": "(?:ö|oe)", "ü": "(?:ü|ue)", "ß": "(?:ß|ss)"}
+
+# Zerlegt einen Begriff in Buchstaben-, Ziffern- und Sonderzeichenblöcke:
+# "ps5" -> "ps", "5"; "play station 5" -> "play", "station", "5". Dadurch ist
+# es egal, ob der Begriff getrennt eingetippt wurde oder zusammen.
+CHUNK = re.compile(r"[^\W\d_]+|\d+|[^\w\s]+")
+
+
+def chunk_regex(chunk):
+    """Ein Wortteil als Muster - Sonderzeichen entwertet, Umlaute geöffnet."""
+    if chunk[:1].isalpha():
+        return "".join(UMLAUT.get(c.lower(), re.escape(c)) for c in chunk)
+    return re.escape(chunk)
+
 
 def term_to_regex(term):
     """Ein eingetipptes Wort in ein sicheres Muster übersetzen.
 
     Sonderzeichen werden entwertet, damit ein Wort wie "c++" nicht als Regex
-    verstanden wird. Leerzeichen dürfen im Inserat mehrfach oder gar nicht
-    stehen ("playstation 5" trifft auch "playstation  5").
+    verstanden wird. Zwischen den Wortteilen darf im Inserat ein beliebiges
+    Trennzeichen stehen oder gar keines: "ps 5" trifft auch PS5, PS-5 und ps.5.
     """
     term = term.strip()
-    if not term:
+    chunks = CHUNK.findall(term)
+    if not chunks:
         return None
-    core = r"\s*".join(re.escape(p) for p in term.split())
+    core = SEP.join(chunk_regex(c) for c in chunks)
     pre = r"\b" if term[:1].isalnum() else ""
     if term[-1:].isalpha():
-        post = PLURAL + r"\b"
+        # Eine angehängte Ziffer beendet das Wort ebenso wie eine Wortgrenze:
+        # "vr" und "psvr" sollen auch "VR2" und "PSVR2" treffen, sonst rutscht
+        # eine VR-Brille als Konsole durch.
+        post = PLURAL + r"(?=\d|\b)"
     elif term[-1:].isalnum():
         post = r"\b"
     else:
@@ -294,9 +603,10 @@ def matches(ad, f):
         except re.error as e:
             return False, "ungültiges Titel-Muster (%s)" % e
 
-    req = [w for w in (f.get("require_words") or []) if w.strip()]
-    if req and not any(re.search(term_to_regex(w), title, re.I) for w in req):
-        return False, "Titel enthält keines von: %s" % ", ".join(req)
+    req = [(term_to_regex(w), w) for w in (f.get("require_words") or []) if w.strip()]
+    req = [(rx, w) for rx, w in req if rx]
+    if req and not any(re.search(rx, title, re.I) for rx, _ in req):
+        return False, "Titel enthält keines von: %s" % ", ".join(w for _, w in req)
 
     # Der Hauptartikel wird getrennt geprüft, damit Zubehör als Beigabe im
     # Bundle erlaubt bleibt.
@@ -367,7 +677,7 @@ def reachable(ad, reach):
 
 def evaluate(search, limit=None):
     """Suche abfragen und jedes Inserat bewerten - Grundlage der Vorschau."""
-    ads, total = fetch(search)
+    ads, total, sources = fetch(search)
     if limit:
         ads = ads[:limit]
     reach = (search.get("filter") or {}).get("reach")
@@ -380,8 +690,10 @@ def evaluate(search, limit=None):
         km = distance_km(ad, reach)
         row["km"] = round(km, 1) if km is not None else None
         row.pop("coords", None)     # Rohkoordinaten muss die Oberfläche nicht sehen
+        # published_ts bleibt drin: die Vorschau sortiert danach nach Datum.
+        # Die Anzeigeform published taugt dafür nicht, sie ist reiner Text.
         out.append(row)
-    return out, total
+    return out, total, sources
 
 
 # ---------------------------------------------------------------- telegram
@@ -502,6 +814,14 @@ def save_config(cfg):
 # mit vielen alten Treffern die volle Prüfung nicht ausufern lässt.
 MAX_TRACKED_PRICES = 300
 
+# Höchstzahl neuer Treffer, die ein einzelner Durchlauf meldet. Greift, wenn
+# eine laufende Suche erweitert wird - eine zusätzliche Schreibweise in
+# `keywords` macht auf einen Schlag lauter Bestandsinserate sichtbar, die
+# sonst alle gleichzeitig im Chat landen würden. Der Rest bleibt ungemerkt
+# und kommt in den nächsten Durchläufen nach, es geht also nichts verloren.
+# Je Suche über `max_notify_per_run` überschreibbar.
+MAX_NOTIFY_PER_RUN = 8
+
 
 def search_entry(state, name):
     """Zustand einer Suche holen, altes Format (nur Liste von IDs) migrieren."""
@@ -512,11 +832,15 @@ def search_entry(state, name):
     entry.setdefault("seen", [])
     entry.setdefault("prices", {})
     entry.setdefault("seo", {})
+    # Was die Detailseite nicht hergibt und nur die Suche kennt.
+    entry.setdefault("extra", {})
     return entry
 
 
 def seen_ids(entry):
-    return entry["seen"] if isinstance(entry, dict) else entry
+    if isinstance(entry, dict):
+        return entry.get("seen", [])
+    return entry or []
 
 
 def run_search(tg, search, state, dry_run=False):
@@ -525,6 +849,7 @@ def run_search(tg, search, state, dry_run=False):
     seen = entry["seen"]
     prices = entry["prices"]
     seo_map = entry["seo"]
+    extra = entry["extra"]
     seen_set = set(seen)
     first_run = not seen_set
     if dry_run:
@@ -535,8 +860,12 @@ def run_search(tg, search, state, dry_run=False):
         prices[ad["id"]] = ad["price"]
         if ad.get("seo"):
             seo_map[ad["id"]] = ad["seo"]
+        # Koordinaten und PayLivery stehen nur in der Suchantwort. Die volle
+        # Preisprüfung braucht sie später für Entfernung und Kennzeichnung.
+        extra[ad["id"]] = {"coords": list(ad["coords"]) if ad.get("coords") else None,
+                           "paylivery": bool(ad.get("paylivery"))}
 
-    ads, _ = fetch(search)
+    ads, _, _ = fetch(search)
     if not ads:
         log("%s: 0 Treffer zurück - Suche prüfen" % name)
         return 0
@@ -546,6 +875,10 @@ def run_search(tg, search, state, dry_run=False):
     new.reverse()   # ältestes zuerst, damit die Chat-Reihenfolge stimmt
 
     sent, failed = 0, set()
+    # Treffer, die diesmal nicht mehr in den Chat passen. Sie bleiben
+    # ungemerkt, damit der nächste Durchlauf sie erneut aufgreift.
+    deferred, hits = set(), 0
+    limit = int(search.get("max_notify_per_run") or MAX_NOTIFY_PER_RUN)
 
     # Preisänderungen bei Inseraten, die schon bekannt sind und weiter zum
     # Filter passen. Preis 0 heißt "keine Angabe" und zählt nicht als
@@ -583,6 +916,10 @@ def run_search(tg, search, state, dry_run=False):
         if first_run:
             track(ad)
             continue
+        hits += 1
+        if hits > limit and not dry_run:
+            deferred.add(ad["id"])
+            continue
         if dry_run:
             log("%s: [DRY] %s | %s" % (name, ad["price_display"], ad["title"][:60]))
         else:
@@ -596,14 +933,23 @@ def run_search(tg, search, state, dry_run=False):
         track(ad)
         sent += 1
 
-    # Nicht zugestellte Treffer bleiben ungemerkt, damit sie wiederkommen.
-    fresh = [a["id"] for a in ads if a["id"] not in seen_set and a["id"] not in failed]
+    if deferred:
+        log("%s: %d weitere Treffer auf die nächsten Durchläufe verschoben "
+            "(höchstens %d Meldungen je Lauf)" % (name, len(deferred), limit))
+
+    # Nicht zugestellte und zurückgestellte Treffer bleiben ungemerkt, damit
+    # sie wiederkommen.
+    fresh = [a["id"] for a in ads
+             if a["id"] not in seen_set
+             and a["id"] not in failed
+             and a["id"] not in deferred]
     entry["seen"] = (fresh + seen)[:MAX_SEEN_PER_SEARCH]
     # Preise/SEO-Pfade nur für die neuesten Treffer behalten - das begrenzt
     # sowohl den Speicher als auch die Kosten der vollen Preisprüfung.
     kept = set(entry["seen"][:MAX_TRACKED_PRICES])
     entry["prices"] = {k: v for k, v in prices.items() if k in kept}
     entry["seo"] = {k: v for k, v in seo_map.items() if k in kept}
+    entry["extra"] = {k: v for k, v in extra.items() if k in kept}
 
     if first_run:
         log("%s: Erstlauf, %d Inserate als bekannt markiert (keine Meldung)"
@@ -631,7 +977,7 @@ def recheck_prices(cfg, state, dry_run=False):
         return 0
     meta.pop("last_error", None)
 
-    sent, checked = 0, 0
+    sent, checked, dropped = 0, 0, 0
     for search in cfg.get("searches", []):
         if search.get("enabled") is False:
             continue
@@ -639,21 +985,33 @@ def recheck_prices(cfg, state, dry_run=False):
         entry = search_entry(state, name)
         prices = entry["prices"]
         seo_map = entry["seo"]
+        extra = entry["extra"]
         reach = (search.get("filter") or {}).get("reach")
 
         def forget(ad_id):
-            """Ein bestätigt verschwundenes Inserat komplett vergessen, nicht
-            nur aus der Preisverfolgung - sonst blockiert es bis zum
-            Herausfallen aus MAX_SEEN_PER_SEARCH unnötig einen Platz."""
+            """Ein verschwundenes Inserat aus der Preisverfolgung nehmen.
+
+            Die `seen`-Liste bleibt bewusst unangetastet: sie ist das
+            Gedächtnis, was schon gemeldet wurde. Eine ID dort zu streichen,
+            die die Suche weiterhin liefert, macht das Inserat im nächsten
+            Durchlauf wieder zum "neuen" Treffer - und das bei jedem
+            Durchlauf erneut. Der Platz, den die ID belegt, ist dagegen
+            vernachlässigbar; sie fällt ohnehin aus MAX_SEEN_PER_SEARCH.
+            """
             prices.pop(ad_id, None)
             seo_map.pop(ad_id, None)
-            if ad_id in entry["seen"]:
-                entry["seen"].remove(ad_id)
+            extra.pop(ad_id, None)
 
         for ad_id, seo in list(seo_map.items()):
             checked += 1
             try:
                 ad = fetch_ad_detail(build_id, seo)
+            except AdGone:
+                dropped += 1
+                log("%s: %s gibt es nicht mehr - Preisverfolgung beendet"
+                    % (name, ad_id))
+                forget(ad_id)
+                continue
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     forget(ad_id)
@@ -667,7 +1025,17 @@ def recheck_prices(cfg, state, dry_run=False):
             finally:
                 time.sleep(0.3)    # willhaben nicht mit Einzelabfragen bombardieren
 
+            # Rückfall für Inserate, deren Detailseite nichts dazu sagt.
+            merk = extra.get(ad_id) or {}
+            if merk.get("coords") and not ad.get("coords"):
+                ad["coords"] = tuple(merk["coords"])
+            if ad.get("paylivery") is None:
+                ad["paylivery"] = bool(merk.get("paylivery"))
+
             if not ad["active"]:
+                dropped += 1
+                log("%s: %s nicht mehr verfügbar (%s) - Preisverfolgung beendet"
+                    % (name, ad_id, ad.get("status") or "unbekannt"))
                 forget(ad_id)
                 continue
 
@@ -694,8 +1062,10 @@ def recheck_prices(cfg, state, dry_run=False):
 
     meta["checked"] = checked
     meta["changed"] = sent
+    meta["dropped"] = dropped
     if checked:
-        log("Preisprüfung (voll): %d Inserat(e) geprüft, %d Änderung(en)" % (checked, sent))
+        log("Preisprüfung (voll): %d Inserat(e) geprüft, %d Änderung(en), "
+            "%d nicht mehr verfügbar" % (checked, sent, dropped))
     return sent
 
 

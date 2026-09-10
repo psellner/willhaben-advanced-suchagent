@@ -14,13 +14,16 @@ Endpunkte:
     POST   /api/reverse          Koordinaten zu Adresse
     PUT    /api/config           gesamte Konfiguration speichern
     POST   /api/preview          Suche testen, ohne etwas zu verschicken
+    POST   /api/check-url        einzelnes Inserat gegen eine Suche prüfen
     POST   /api/reset            Zustand einer Suche verwerfen
     POST   /api/test-telegram    Testnachricht verschicken
 """
 
 import base64
+import hmac
 import json
 import os
+import urllib.error
 import urllib.parse
 import threading
 import time
@@ -161,12 +164,50 @@ class Handler(BaseHTTPRequestHandler):
     # -------------------------------------------------- helpers
 
     def authorized(self):
+        """HTTP-Basic-Auth prüfen. Ohne UI_PASSWORD ist die Oberfläche offen.
+
+        Der Header wird entschlüsselt und Benutzer und Passwort werden
+        einzeln verglichen, statt die fertige base64-Zeichenkette gegen eine
+        selbst gebaute zu halten: Clients schreiben das Schema
+        unterschiedlich groß und setzen die base64-Füllzeichen nicht immer
+        gleich. Ist UI_USER leer, ist der Benutzername beliebig - sonst hängt
+        der Zugang daran, im Anmeldefenster genau nichts einzutippen, und das
+        ist am Handy kaum zu treffen.
+        """
         if not UI_PASSWORD:
             return True
-        want = base64.b64encode(
-            ("%s:%s" % (UI_USER, UI_PASSWORD)).encode()).decode()
         got = self.headers.get("Authorization", "")
-        return got == "Basic " + want
+        scheme, _, payload = got.partition(" ")
+        if scheme.lower() != "basic":
+            if got:
+                self.auth_note = "unbekanntes Auth-Verfahren %r" % scheme
+            else:
+                self.auth_note = "kein Basic-Auth-Header"
+            return False
+        raw = payload.strip()
+        raw += "=" * (-len(raw) % 4)    # fehlende Füllzeichen ergänzen
+        try:
+            decoded = base64.b64decode(raw.encode("ascii"))
+        except ValueError as e:
+            self.auth_note = "Auth-Header nicht lesbar (%s)" % e
+            return False
+        try:
+            creds = decoded.decode("utf-8")
+        except UnicodeDecodeError:
+            # Ältere Browser schicken Umlaute im Passwort als Latin-1.
+            creds = decoded.decode("latin-1")
+        user, _, pwd = creds.partition(":")
+        # Vergleich auf Bytes: compare_digest verweigert Zeichenketten mit
+        # Umlauten, und ein Passwort mit Umlaut ist nichts Verbotenes.
+        if UI_USER and not hmac.compare_digest(user.encode("utf-8"),
+                                               UI_USER.encode("utf-8")):
+            self.auth_note = "Benutzername %r passt nicht zu UI_USER" % user
+            return False
+        if not hmac.compare_digest(pwd.encode("utf-8"),
+                                   UI_PASSWORD.encode("utf-8")):
+            self.auth_note = "falsches Passwort"
+            return False
+        return True
 
     def send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -199,8 +240,20 @@ class Handler(BaseHTTPRequestHandler):
     def guard(self):
         if self.authorized():
             return True
+        # Grund einmal ins Log, sonst sieht man von außen nur ein stummes
+        # Anmeldefenster und weiß nicht, ob Benutzer, Passwort oder ein
+        # Reverse-Proxy davor das Problem ist. Das erste 401 ohne Header ist
+        # der normale Ablauf und daher nicht meldenswert.
+        note = getattr(self, "auth_note", "")
+        if note and note != "kein Basic-Auth-Header":
+            agent.log("Anmeldung abgewiesen: %s" % note)
+        # Body verwerfen, damit die Verbindung sauber endet.
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(n)
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="willhaben-agent"')
+        self.send_header("Content-Length", "0")
         self.end_headers()
         return False
 
@@ -253,6 +306,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.save_config(data)
             if path == "/api/preview":
                 return self.preview(data)
+            if path == "/api/check-url":
+                return self.check_url(data)
             if path == "/api/reset":
                 return self.reset(data)
             if path == "/api/test-telegram":
@@ -329,14 +384,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def preview(self, data):
         search = data.get("search") or {}
-        rows, total = agent.evaluate(search, limit=int(data.get("limit") or 0) or None)
+        rows, total, sources = agent.evaluate(
+            search, limit=int(data.get("limit") or 0) or None)
         return self.send_json({
             "total_on_willhaben": total,
             "checked": len(rows),
             "passed": sum(1 for r in rows if r["ok"]),
-            "api_url": agent.build_api_url(search),
+            # Eine Zeile je Schreibweise: was sie liefert und was nur sie liefert.
+            "sources": sources,
+            "api_url": sources[0]["url"] if sources else "",
             "results": rows,
         })
+
+    def check_url(self, data):
+        """Ein einzelnes Inserat gegen die gerade offene Suche halten.
+
+        Zusätzlich zum Filterurteil wird gemeldet, ob die Suche das Inserat
+        überhaupt noch anliefert und ob es bereits als bekannt gemerkt ist.
+        Beides entscheidet mit darüber, ob eine Meldung käme - der Filter
+        allein sagt das nicht.
+        """
+        search = data.get("search") or {}
+        try:
+            res = agent.check_ad(search, data.get("url", ""), geocode=geocode)
+        except ValueError as e:
+            return self.send_json({"error": str(e)}, 400)
+        except agent.AdGone:
+            return self.send_json(
+                {"error": "Unter dieser Adresse liegt kein Inserat mehr - "
+                          "gelöscht, abgelaufen oder die ID stimmt nicht."}, 404)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return self.send_json({"error": "Inserat nicht gefunden."}, 404)
+            raise
+
+        state = agent.load_json(agent.STATE_PATH, {})
+        entry = state.get(search.get("name"))
+        res["already_seen"] = res["ad"]["id"] in set(agent.seen_ids(entry))
+        return self.send_json(res)
 
     def reset(self, data):
         name = data.get("name")
@@ -377,8 +462,12 @@ def main():
     seed_config()
     threading.Thread(target=poller, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    agent.log("Oberfläche auf http://0.0.0.0:%d%s"
-              % (PORT, " (passwortgeschützt)" if UI_PASSWORD else ""))
+    if UI_PASSWORD:
+        agent.log("Oberfläche auf http://0.0.0.0:%d (Passwortschutz aktiv, "
+                  "Benutzer: %s)" % (PORT, UI_USER or "beliebig"))
+    else:
+        agent.log("Oberfläche auf http://0.0.0.0:%d (ohne Passwort - "
+                  "UI_PASSWORD ist nicht gesetzt)" % PORT)
     srv.serve_forever()
 
 

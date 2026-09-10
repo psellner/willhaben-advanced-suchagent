@@ -6,6 +6,7 @@
       "name": "beispiel",
       "enabled": false,
       "path": "kaufen-und-verkaufen/marktplatz",
+      "keywords": [],
       "rows": 30,
       "params": {
         "keyword": "",

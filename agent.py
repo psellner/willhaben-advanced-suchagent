@@ -285,8 +285,11 @@ def fetch_ad_detail(build_id, seo):
 
 # Trennt den Hauptartikel von der Zubehör-Aufzählung im Titel.
 # "PS5 Slim Digital + 2 DualSense Controller" -> "PS5 Slim Digital"
+# "und" und "samt" gehören dazu: "Verkaufe ps5 und spiele" verkauft die
+# Konsole, nicht die Spiele. Ohne diese Trenner gilt der ganze Titel als
+# Hauptartikel und ein Zubehör-Ausschluss verwirft das Inserat.
 HEAD_SPLIT = re.compile(
-    r"\s*(?:[+|&,/]|\b(?:inkl|inklusive|incl|mit|sowie|dazu|plus)\b|\s-\s)", re.I)
+    r"\s*(?:[+|&,/]|\b(?:inkl|inklusive|incl|mit|und|samt|sowie|dazu|plus)\b|\s-\s)", re.I)
 
 
 def title_head(title):

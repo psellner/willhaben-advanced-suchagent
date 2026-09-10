@@ -131,6 +131,7 @@ def haversine_km(a, b):
 def parse_ad(ad):
     seo = attr(ad, "SEO_URL")
     mmo = attr(ad, "MMO")
+    status = (ad.get("advertStatus") or {}).get("id") or ""
     try:
         price = float(attr(ad, "PRICE", "0") or 0)
     except ValueError:
@@ -156,6 +157,11 @@ def parse_ad(ad):
         "private": attr(ad, "ISPRIVATE") == "1",
         "url": "https://www.willhaben.at/iad/" + seo if seo else "",
         "image": "https://cache.willhaben.at/mmo/" + mmo if mmo else "",
+        # Auch die Suche kennt den Status, nicht nur die Detailseite. Sie
+        # liefert reservierte Inserate ganz normal mit aus - in der Vorschau
+        # sollen sie als solche erkennbar sein.
+        "status": status,
+        "active": status in LIVE_STATUS,
     }
 
 

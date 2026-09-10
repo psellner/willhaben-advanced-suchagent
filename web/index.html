@@ -666,6 +666,14 @@ function drawRows() {
   if (cb) cb.onchange = () => { ONLY_PASS = cb.checked; drawRows(); };
 }
 
+// willhaben liefert reservierte Inserate ganz normal in der Suche mit. Sie
+// kommen durch jeden Filter, sind aber meist schon vergeben - deshalb in der
+// Vorschau ausgewiesen statt verschwiegen.
+const STATUS_TEXT = { reserved: "reserviert", sold: "verkauft",
+                      expired: "abgelaufen", deleted: "gelöscht" };
+
+function statusText(id) { return STATUS_TEXT[id] || id; }
+
 function resultsTable(rows) {
   if (!rows.length) return '<div class="empty">Keine Inserate.</div>';
   let h = '<table><thead><tr><th></th><th></th><th>Inserat</th>' +
@@ -678,7 +686,9 @@ function resultsTable(rows) {
       '<td><a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.title) + '</a>' +
         '<div class="hint">' + esc((r.published || "").replace("T", " ").replace("Z", "")) +
         ' · ' + (r.private ? "privat" : "gewerblich") +
-        (r.paylivery ? ' · <b>PayLivery</b>' : '') + '</div></td>' +
+        (r.paylivery ? ' · <b>PayLivery</b>' : '') +
+        (r.status && r.status !== "active" ? ' · <b>' + esc(statusText(r.status)) + '</b>' : '') +
+        '</div></td>' +
       '<td class="num">' + esc(r.price_display) + '</td>' +
       '<td>' + esc(r.postcode + " " + r.location) +
         (r.km != null ? '<div class="hint">' + r.km + ' km</div>' : '') + '</td>' +
@@ -731,7 +741,7 @@ function checkCard(d) {
       (d.coords_source ? " (" + esc(d.coords_source) + ")" : "") +
       (a.paylivery ? " · PayLivery" : "") + "</dd>" +
     "<dt>Anbieter</dt><dd>" + (a.private ? "privat" : "gewerblich") + "</dd>" +
-    "<dt>Zustand</dt><dd>" + esc(a.status || "unbekannt") +
+    "<dt>Zustand</dt><dd>" + esc(a.status ? statusText(a.status) : "unbekannt") +
       (a.active ? "" : " — nicht mehr aktiv") + "</dd>" +
     "<dt>Suche liefert es</dt><dd>" + liefert + "</dd>" +
     "<dt>Schon gemerkt</dt><dd>" +

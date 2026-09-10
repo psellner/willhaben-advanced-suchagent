@@ -307,8 +307,13 @@ const joinW = (a) => (a || []).join(", ");
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+// Basis der Oberflaeche, damit die Aufrufe auch hinter einem Reverse-Proxy
+// stimmen, der die App unter einem Unterpfad einhaengt (https://nas/willhaben/).
+// Am Wurzelpfad kommt dasselbe heraus wie vorher.
+const BASE = location.pathname.replace(/[^/]*$/, "");
+
 async function api(path, method, body) {
-  const r = await fetch(path, {
+  const r = await fetch(BASE + path.replace(/^\//, ""), {
     method: method || "GET",
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : null

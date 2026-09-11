@@ -127,7 +127,7 @@ def poller():
     fails = 0
     while True:
         cfg = agent.load_config()
-        interval = int(os.environ.get("POLL_INTERVAL", cfg["poll_interval"]) or 60)
+        interval = int(cfg.get("poll_interval") or 60)
         STATUS["interval"] = interval
 
         if cfg["telegram"]["token"] and cfg["telegram"]["chat_id"]:

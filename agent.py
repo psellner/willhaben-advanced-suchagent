@@ -1071,8 +1071,7 @@ def recheck_prices(cfg, state, dry_run=False):
 
 def maybe_recheck_prices(cfg, state, dry_run=False):
     """Löst recheck_prices() nur im Abstand von `price_check_interval` aus."""
-    interval = int(os.environ.get(
-        "PRICE_CHECK_INTERVAL", cfg.get("price_check_interval")) or 0)
+    interval = int(cfg.get("price_check_interval") or 0)
     if interval <= 0 or dry_run:
         return 0
     meta = state.setdefault("_meta", {})
@@ -1135,7 +1134,7 @@ def main():
         log("TELEGRAM_TOKEN / TELEGRAM_CHAT_ID fehlen")
         return 1
 
-    interval = int(os.environ.get("POLL_INTERVAL", cfg["poll_interval"]))
+    interval = int(cfg.get("poll_interval") or 60)
     log("Start: %d Suche(n), Intervall %ds%s"
         % (len(cfg["searches"]), interval, " [DRY RUN]" if dry_run else ""))
 

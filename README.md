@@ -228,8 +228,10 @@ Oberfläche öffnen: `http://localhost:8088`. Beim ersten Start wird
 
 ## Betrieb
 
-`POLL_INTERVAL` steht auf 60 Sekunden. Bei ~130 KB pro Abfrage und Suche
-sind das rund 180 MB am Tag. Unter 30 Sekunden ist wenig sinnvoll, weil
+Das Abfrageintervall wird in der Oberfläche gesetzt und steht in
+`data/config.json` unter `poll_interval`, voreingestellt sind 60
+Sekunden. Bei ~130 KB pro Abfrage und Suche sind das rund 180 MB am
+Tag. Unter 30 Sekunden ist wenig sinnvoll, weil
 neue Inserate ohnehin erst mit Freischaltung sichtbar werden. Nach Fehlern
 verdoppelt der Agent den Abstand bis maximal das 16-Fache und geht bei der
 ersten erfolgreichen Abfrage wieder auf den Normaltakt.

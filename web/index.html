@@ -881,7 +881,7 @@ async function load() {
     window._st = d;
     CFG = d.config;
     CFG.searches = CFG.searches || [];
-    $("interval").value = d.status.interval || CFG.poll_interval || 60;
+    $("interval").value = CFG.poll_interval || d.status.interval || 60;
     const pci = CFG.price_check_interval || 0;
     $("f-pricecheck-on").checked = pci > 0;
     $("f-pricecheck-interval").value = Math.max(1, Math.round((pci || 1800) / 60));
